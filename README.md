@@ -43,7 +43,7 @@ Claude(Architect) → Claude(Part1) + Codex(Part2) + Gemini(Part3) 병렬 생성
 
 ```bash
 # 1. 클론
-git clone https://github.com/your-username/debate-chain.git
+git clone https://github.com/dwonc/debate-chain.git
 cd debate-chain
 
 # 2. 의존성 설치
