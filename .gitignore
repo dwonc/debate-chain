@@ -3,13 +3,17 @@ node_modules/
 .venv/
 __pycache__/
 *.pyc
+*.pyo
+*.pyd
 
 # Environment
 .env
 
-# Logs (keep directory)
+# Logs (keep directory, ignore generated files)
 logs/*.json
+logs/*.jsonl
 logs/*.txt
+logs/*.jsonl
 !logs/.gitkeep
 
 # IDE
@@ -24,3 +28,31 @@ Thumbs.db
 # Debug/test files
 mcp_test.py
 run_mcp.bat
+
+# ── v8 추가 ──────────────────────────────────
+
+# SQLite DB (job_store.py 생성)
+debate_chain.db
+debate_chain.db-shm
+debate_chain.db-wal
+
+# code_exec 샌드박스 임시파일
+debate_chain_exec/
+
+# sentence-transformers 모델 캐시
+.cache/
+models/
+
+# 보안 temp 파일 디렉터리
+debate_chain_secure/
+
+# pytest / coverage
+.pytest_cache/
+htmlcov/
+.coverage
+coverage.xml
+
+# 빌드 산출물
+dist/
+build/
+*.egg-info/

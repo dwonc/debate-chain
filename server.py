@@ -515,7 +515,7 @@ def run_debate(debate_id, task, threshold, max_rounds, initial_solution=""):
                 solution = raw
                 disp = raw
 
-            state["messages"].append({"role": "generator", "content": disp})
+            state["messages"].append({"role": "generator", "content": disp, "ts": datetime.now().isoformat()})
             # raw_steps에 구조화 데이터 저장
             state.setdefault("raw_steps", []).append({"role": "generator", "data": jd or {}})
 
@@ -549,7 +549,7 @@ def run_debate(debate_id, task, threshold, max_rounds, initial_solution=""):
             if critic_merged["strengths"]:
                 disp += "\nStrengths: " + " | ".join(critic_merged["strengths"][:3])
 
-            state["messages"].append({"role": "critic", "content": disp, "score": c_score})
+            state["messages"].append({"role": "critic", "content": disp, "score": c_score, "ts": datetime.now().isoformat()})
             state.setdefault("raw_steps", []).append({"role": "critic", "data": critic_merged})
 
             # ── 수렴 판정 (다차원) ──
@@ -581,7 +581,7 @@ def run_debate(debate_id, task, threshold, max_rounds, initial_solution=""):
                     solution = synth_raw
                     disp = synth_raw
 
-                state["messages"].append({"role": "synthesizer", "content": disp, "model": "Codex"})
+                state["messages"].append({"role": "synthesizer", "content": disp, "model": "Codex", "ts": datetime.now().isoformat()})
                 state.setdefault("raw_steps", []).append({"role": "synthesizer", "data": synth_jd or {}})
 
         if state["status"] == "running":
@@ -939,6 +939,57 @@ def list_threads():
             "created_at": d.get("created_at", ""),
         }
     return jsonify(sorted(threads.values(), key=lambda x: x.get("created_at", ""), reverse=True))
+
+
+@app.route("/api/timing/<job_id>")
+def get_timing(job_id):
+    """job 전체 소요시간 + phase별 breakdown"""
+    state = (debates.get(job_id) or pairs.get(job_id)
+             or pipelines.get(job_id) or self_improves.get(job_id))
+    if not state:
+        for store in [debates, pairs, pipelines, self_improves]:
+            log_file = LOG_DIR / f"{job_id}.json"
+            if log_file.exists():
+                with open(log_file, "r", encoding="utf-8") as f:
+                    state = json.load(f)
+                break
+    if not state:
+        return jsonify({"error": "not found"}), 404
+
+    created = state.get("created_at")
+    finished = state.get("finished_at")
+    total_sec = None
+    if created and finished:
+        from datetime import timezone
+        def parse_dt(s):
+            return datetime.fromisoformat(s)
+        try:
+            total_sec = round((parse_dt(finished) - parse_dt(created)).total_seconds(), 1)
+        except: pass
+
+    # message timestamp에서 phase별 소요시간 계산
+    phases = []
+    msgs = state.get("messages", [])
+    for i, m in enumerate(msgs):
+        ts = m.get("ts")
+        next_ts = msgs[i+1].get("ts") if i+1 < len(msgs) else finished
+        if ts and next_ts:
+            try:
+                dur = round((datetime.fromisoformat(next_ts) - datetime.fromisoformat(ts)).total_seconds(), 1)
+                phases.append({"role": m["role"], "round": (i // 3) + 1, "duration_sec": dur, "ts": ts})
+            except: pass
+
+    return jsonify({
+        "id": job_id,
+        "status": state.get("status"),
+        "created_at": created,
+        "finished_at": finished,
+        "total_sec": total_sec,
+        "total_min": round(total_sec / 60, 1) if total_sec else None,
+        "rounds": state.get("round", 0),
+        "avg_score": state.get("avg_score", 0),
+        "phase_breakdown": phases,
+    })
 
 
 @app.route("/api/delete/<debate_id>", methods=["DELETE"])

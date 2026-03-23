@@ -1,0 +1,293 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Debate Chain Dashboard</title>
+<style>
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  :root {
+    --bg: #0f0f13; --surface: #1a1a22; --surface2: #22222e;
+    --border: #2e2e3e; --text: #e2e2f0; --muted: #7c7c9c;
+    --accent: #7c6ff5; --green: #4ade80; --red: #f87171;
+    --yellow: #facc15; --blue: #60a5fa;
+  }
+  body { background: var(--bg); color: var(--text); font-family: 'Segoe UI', system-ui, sans-serif; font-size: 14px; }
+  header { padding: 16px 24px; border-bottom: 1px solid var(--border); display: flex; align-items: center; gap: 12px; }
+  header h1 { font-size: 18px; font-weight: 600; }
+  .badge { font-size: 11px; padding: 2px 8px; border-radius: 4px; background: var(--accent); color: #fff; }
+  .layout { display: grid; grid-template-columns: 300px 1fr; height: calc(100vh - 57px); }
+  .sidebar { border-right: 1px solid var(--border); overflow-y: auto; }
+  .sidebar-title { padding: 12px 16px; font-size: 11px; font-weight: 600; color: var(--muted); text-transform: uppercase; letter-spacing: .06em; border-bottom: 1px solid var(--border); display:flex; justify-content:space-between; align-items:center; }
+  .job-item { padding: 12px 16px; border-bottom: 1px solid var(--border); cursor: pointer; transition: background .15s; }
+  .job-item:hover, .job-item.active { background: var(--surface2); }
+  .job-id { font-size: 12px; font-family: monospace; color: var(--accent); margin-bottom: 4px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .job-meta { display: flex; gap: 8px; align-items: center; }
+  .status-pill { font-size: 10px; padding: 1px 6px; border-radius: 3px; font-weight: 600; }
+  .status-running   { background: rgba(96,165,250,.2); color: var(--blue); }
+  .status-converged { background: rgba(74,222,128,.2); color: var(--green); }
+  .status-failed    { background: rgba(248,113,113,.2); color: var(--red); }
+  .status-queued    { background: rgba(124,111,245,.2); color: var(--accent); }
+  .status-recovering{ background: rgba(250,204,21,.2); color: var(--yellow); }
+  .main { display: flex; flex-direction: column; overflow: hidden; }
+  .main-header { padding: 14px 24px; border-bottom: 1px solid var(--border); display: flex; align-items: center; gap: 12px; flex-wrap: wrap; }
+  .main-header h2 { font-size: 14px; font-weight: 600; font-family: monospace; flex: 1; color: var(--accent); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .btn { padding: 5px 12px; border-radius: 6px; border: 1px solid var(--border); background: var(--surface2); color: var(--text); cursor: pointer; font-size: 12px; }
+  .btn:hover { background: var(--border); }
+  .btn-primary { background: var(--accent); border-color: var(--accent); color: #fff; }
+  .tabs { display: flex; border-bottom: 1px solid var(--border); padding: 0 24px; }
+  .tab { padding: 10px 14px; cursor: pointer; font-size: 13px; border-bottom: 2px solid transparent; color: var(--muted); }
+  .tab.active { color: var(--accent); border-bottom-color: var(--accent); }
+  .content { flex: 1; overflow-y: auto; padding: 20px 24px; }
+  .tab-panel { display: none; }
+  .tab-panel.active { display: block; }
+  .round-card { background: var(--surface); border: 1px solid var(--border); border-radius: 8px; margin-bottom: 14px; overflow: hidden; }
+  .round-header { padding: 10px 16px; background: var(--surface2); display: flex; align-items: center; gap: 10px; }
+  .round-num { font-weight: 700; font-size: 12px; color: var(--accent); min-width: 60px; }
+  .score-bar-wrap { flex: 1; height: 5px; background: var(--border); border-radius: 3px; overflow: hidden; }
+  .score-bar { height: 100%; border-radius: 3px; transition: width .5s; }
+  .score-val { font-size: 12px; font-weight: 600; min-width: 44px; text-align: right; }
+  .ai-responses { display: grid; grid-template-columns: repeat(3, 1fr); gap: 10px; padding: 12px; }
+  .ai-block { background: var(--surface2); border-radius: 6px; padding: 10px; }
+  .ai-label { font-size: 10px; font-weight: 700; text-transform: uppercase; letter-spacing: .08em; margin-bottom: 6px; }
+  .ai-label.claude { color: #c084fc; }
+  .ai-label.codex  { color: var(--blue); }
+  .ai-label.gemini { color: var(--green); }
+  .ai-text { font-size: 11px; line-height: 1.6; color: var(--muted); max-height: 180px; overflow-y: auto; white-space: pre-wrap; word-break: break-word; }
+  .solution-box { background: var(--surface); border: 1px solid var(--border); border-radius: 8px; padding: 16px; }
+  .solution-box pre { font-family: monospace; font-size: 12px; line-height: 1.7; white-space: pre-wrap; word-break: break-word; }
+  .stat-grid { display: grid; grid-template-columns: repeat(4, 1fr); gap: 10px; margin-bottom: 18px; }
+  .stat-card { background: var(--surface); border: 1px solid var(--border); border-radius: 8px; padding: 12px 14px; }
+  .stat-label { font-size: 11px; color: var(--muted); margin-bottom: 4px; }
+  .stat-val { font-size: 22px; font-weight: 700; }
+  .cost-table { width: 100%; border-collapse: collapse; }
+  .cost-table th, .cost-table td { padding: 8px 12px; text-align: left; border-bottom: 1px solid var(--border); font-size: 13px; }
+  .cost-table th { color: var(--muted); font-size: 11px; text-transform: uppercase; }
+  .empty { text-align: center; color: var(--muted); padding: 60px 24px; }
+  .new-form { background: var(--surface); border: 1px solid var(--border); border-radius: 8px; padding: 20px; max-width: 560px; }
+  .form-group { margin-bottom: 14px; }
+  .form-label { font-size: 12px; color: var(--muted); margin-bottom: 5px; display: block; }
+  textarea, select, input[type=number] { width: 100%; background: var(--surface2); border: 1px solid var(--border); border-radius: 6px; padding: 8px 12px; color: var(--text); font-size: 13px; outline: none; }
+  textarea:focus, select:focus { border-color: var(--accent); }
+  textarea { resize: vertical; min-height: 90px; font-family: inherit; }
+  .live-dot { width: 8px; height: 8px; border-radius: 50%; background: var(--green); animation: pulse 1.5s infinite; }
+  @keyframes pulse { 0%,100%{opacity:1} 50%{opacity:.3} }
+</style>
+</head>
+<body>
+<header>
+  <h1>⛓️ Debate Chain</h1>
+  <span class="badge" id="worker-badge">Workers: -</span>
+  <span class="badge" style="background:var(--surface2);color:var(--muted)" id="cost-badge">$0.0000 used</span>
+</header>
+
+<div class="layout">
+  <div class="sidebar">
+    <div class="sidebar-title">
+      <span>Jobs</span>
+      <button class="btn btn-primary" style="padding:3px 10px;font-size:11px" onclick="showNewForm()">+ New</button>
+    </div>
+    <div id="job-list"><div class="empty" style="padding:24px">없음</div></div>
+  </div>
+
+  <div class="main">
+    <div id="panel-new" style="padding:24px;display:none">
+      <div class="new-form">
+        <h3 style="font-size:15px;margin-bottom:16px;font-weight:600">새 Debate 시작</h3>
+        <div class="form-group"><label class="form-label">Task</label><textarea id="new-task" placeholder="해결할 문제를 입력하세요..."></textarea></div>
+        <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px;margin-bottom:14px">
+          <div><label class="form-label">Mode</label>
+            <select id="new-mode">
+              <option value="debate">debate</option><option value="pair2">pair2</option>
+              <option value="pair3">pair3</option><option value="debate_pair2">debate_pair2</option>
+              <option value="debate_pair3">debate_pair3</option>
+            </select>
+          </div>
+          <div><label class="form-label">Max Rounds</label><input type="number" id="new-rounds" value="3" min="1" max="10"></div>
+        </div>
+        <button class="btn btn-primary" onclick="submitJob()">▶ 실행</button>
+      </div>
+    </div>
+
+    <div id="panel-job" style="display:none;flex:1;flex-direction:column">
+      <div class="main-header">
+        <h2 id="detail-id">-</h2>
+        <span class="status-pill" id="detail-status">-</span>
+        <div class="live-dot" id="live-dot" style="display:none"></div>
+        <button class="btn" onclick="copyResult()">📋 복사</button>
+        <button class="btn" onclick="if(currentId)loadDetail(currentId)">↻</button>
+      </div>
+      <div class="tabs">
+        <div class="tab active" onclick="tab('rounds')">라운드</div>
+        <div class="tab" onclick="tab('solution')">최종 솔루션</div>
+        <div class="tab" onclick="tab('cost')">비용</div>
+      </div>
+      <div class="content">
+        <div id="tab-rounds" class="tab-panel active">
+          <div class="stat-grid">
+            <div class="stat-card"><div class="stat-label">라운드</div><div class="stat-val" id="s-rounds">-</div></div>
+            <div class="stat-card"><div class="stat-label">최종 점수</div><div class="stat-val" id="s-score">-</div></div>
+            <div class="stat-card"><div class="stat-label">수렴 여부</div><div class="stat-val" id="s-conv">-</div></div>
+            <div class="stat-card"><div class="stat-label">Mode</div><div class="stat-val" id="s-mode" style="font-size:14px;padding-top:4px">-</div></div>
+          </div>
+          <div id="rounds-container"></div>
+        </div>
+        <div id="tab-solution" class="tab-panel"><div class="solution-box"><pre id="solution-text">-</pre></div></div>
+        <div id="tab-cost" class="tab-panel">
+          <table class="cost-table">
+            <thead><tr><th>Provider</th><th>Calls</th><th>Tokens In</th><th>Tokens Out</th><th>Cost USD</th></tr></thead>
+            <tbody id="cost-tbody"><tr><td colspan="5" style="color:var(--muted);text-align:center">비용 데이터 없음</td></tr></tbody>
+          </table>
+        </div>
+      </div>
+    </div>
+
+    <div id="panel-empty" class="empty" style="margin:auto;padding:80px">
+      <div style="font-size:48px;margin-bottom:16px">⛓️</div>
+      <div style="font-size:15px">Job을 선택하거나 + New로 시작하세요</div>
+    </div>
+  </div>
+</div>
+
+<script>
+let currentId = null;
+let sse = null;
+
+async function api(path, opts) {
+  const r = await fetch(path, opts);
+  if (!r.ok) throw new Error(await r.text());
+  return r.json();
+}
+
+async function loadJobs() {
+  try {
+    const d = await api('/api/jobs');
+    const list = d.jobs || [];
+    const el = document.getElementById('job-list');
+    if (!list.length) { el.innerHTML = '<div class="empty" style="padding:24px">없음</div>'; return; }
+    el.innerHTML = list.sort((a,b)=>(b.created_at||'').localeCompare(a.created_at||'')).map(j=>`
+      <div class="job-item ${j.job_id===currentId?'active':''}" onclick="selectJob('${j.job_id}')">
+        <div class="job-id">${j.job_id}</div>
+        <div class="job-meta">
+          <span class="status-pill status-${j.status}">${j.status}</span>
+          <span style="font-size:11px;color:var(--muted)">${j.job_type||''}</span>
+        </div>
+      </div>`).join('');
+  } catch(e) { console.error(e); }
+}
+
+function selectJob(id) {
+  currentId = id;
+  document.getElementById('panel-new').style.display='none';
+  document.getElementById('panel-empty').style.display='none';
+  document.getElementById('panel-job').style.display='flex';
+  document.getElementById('detail-id').textContent = id;
+  loadDetail(id);
+  startSSE(id);
+  loadJobs();
+}
+
+async function loadDetail(id) {
+  try {
+    const d = await api(`/api/status/${id}`);
+    const debate = d.debate || d;
+    const status = d.status || debate.status || '-';
+    const rounds = d.rounds || debate.rounds || 0;
+    const score  = d.final_score ?? debate.final_score ?? '-';
+    const conv   = d.converged ?? debate.converged ?? false;
+    const sol    = d.final_solution || debate.final_solution || '';
+    const hist   = d.history || debate.history || [];
+    const mode   = d.mode || '-';
+
+    document.getElementById('detail-status').textContent = status;
+    document.getElementById('detail-status').className = `status-pill status-${status}`;
+    document.getElementById('live-dot').style.display = status==='running'?'block':'none';
+    document.getElementById('s-rounds').textContent = rounds;
+    document.getElementById('s-score').textContent  = typeof score==='number' ? score.toFixed(1) : score;
+    document.getElementById('s-conv').textContent   = conv ? '✓ 수렴' : rounds?'미수렴':'-';
+    document.getElementById('s-mode').textContent   = mode;
+    document.getElementById('solution-text').textContent = sol || '(진행 중)';
+
+    const c = document.getElementById('rounds-container');
+    if (!hist.length) { c.innerHTML='<div style="color:var(--muted)">라운드 데이터 없음</div>'; return; }
+    c.innerHTML = hist.map((r,i)=>{
+      const sc = r.avg_score ?? r.critic_score ?? 0;
+      const pct = (sc/10*100).toFixed(0);
+      const col = sc>=8?'var(--green)':sc>=6?'var(--yellow)':'var(--red)';
+      return `<div class="round-card">
+        <div class="round-header">
+          <span class="round-num">Round ${i+1}</span>
+          <div class="score-bar-wrap"><div class="score-bar" style="width:${pct}%;background:${col}"></div></div>
+          <span class="score-val" style="color:${col}">${typeof sc==='number'?sc.toFixed(1):sc}/10</span>
+          ${r.converged?'<span style="color:var(--green);font-size:11px;font-weight:600">✓</span>':''}
+        </div>
+        <div class="ai-responses">
+          ${r.generator?`<div class="ai-block"><div class="ai-label claude">Claude</div><div class="ai-text">${esc(r.generator.slice(0,300))}</div></div>`:''}
+          ${r.critic?`<div class="ai-block"><div class="ai-label codex">Codex</div><div class="ai-text">${esc(r.critic.slice(0,300))}</div></div>`:''}
+          ${r.verifier?`<div class="ai-block"><div class="ai-label gemini">Gemini</div><div class="ai-text">${esc(r.verifier.slice(0,300))}</div></div>`:''}
+        </div></div>`;
+    }).join('');
+  } catch(e) { console.error(e); }
+}
+
+function startSSE(id) {
+  if (sse) sse.close();
+  try {
+    sse = new EventSource(`/stream/${id}`);
+    ['converged','failed','round_complete'].forEach(ev => {
+      sse.addEventListener(ev, ()=>{ loadDetail(id); loadJobs(); });
+    });
+    sse.onerror = ()=>sse.close();
+  } catch {}
+}
+
+function showNewForm() {
+  currentId = null;
+  document.getElementById('panel-empty').style.display='none';
+  document.getElementById('panel-job').style.display='none';
+  document.getElementById('panel-new').style.display='block';
+}
+
+async function submitJob() {
+  const task = document.getElementById('new-task').value.trim();
+  if (!task) return alert('Task를 입력하세요');
+  const mode = document.getElementById('new-mode').value;
+  const max_rounds = +document.getElementById('new-rounds').value;
+  try {
+    const d = await api('/run', { method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({task,mode,max_rounds}) });
+    await loadJobs();
+    const id = d.debate_id||d.pair_id||d.pipeline_id||d.job_id;
+    if (id) selectJob(id);
+  } catch(e) { alert('오류: '+e.message); }
+}
+
+function tab(name) {
+  ['rounds','solution','cost'].forEach((n,i)=>{
+    document.querySelectorAll('.tab')[i]?.classList.toggle('active',n===name);
+    document.getElementById(`tab-${n}`)?.classList.toggle('active',n===name);
+  });
+}
+
+function copyResult() {
+  navigator.clipboard.writeText(document.getElementById('solution-text').textContent);
+}
+
+function esc(s) {
+  return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
+}
+
+async function pollSystem() {
+  try {
+    const d = await api('/api/system');
+    document.getElementById('worker-badge').textContent = `Workers: ${d.active_workers??0} active`;
+    document.getElementById('cost-badge').textContent = `$${(d.cost_usd||0).toFixed(4)} used`;
+  } catch {}
+}
+
+loadJobs();
+pollSystem();
+setInterval(loadJobs, 4000);
+setInterval(pollSystem, 8000);
+</script>
+</body>
+</html>

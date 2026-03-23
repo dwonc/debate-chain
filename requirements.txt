@@ -1,1 +1,20 @@
-flask>=3.0.0
+# Debate Chain Requirements
+# 기본 (필수)
+flask>=3.0
+google-generativeai>=0.8
+
+# core/job_store.py — SQLite는 표준 라이브러리, 추가 패키지 불필요
+
+# core/convergence.py — semantic similarity (택 1)
+scikit-learn>=1.4          # TF-IDF fallback (권장)
+# sentence-transformers>=3.0  # 최고 품질, GPU 없어도 동작 (선택)
+
+# core/tools.py — tool 호출
+duckduckgo-search>=6.0     # web_search 툴 (선택)
+
+# core/provider.py — SDK backends (선택)
+# anthropic>=0.40           # Claude SDK backend
+# openai>=1.50              # OpenAI SDK backend
+
+# 기타
+python-dotenv>=1.0
