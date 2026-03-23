@@ -242,11 +242,23 @@ def extract_debate_artifact(state: dict) -> dict:
 # Phase 1: AI CALLERS (shell=False + stdin, temp file 제거)
 # ═══════════════════════════════════════════
 
-# Windows npm CLI 절대경로
-_NPM = r"C:\Users\User\AppData\Roaming\npm"
-_CLAUDE_CMD = ["cmd", "/c", f"{_NPM}\\claude.cmd", "-p"]
-_CODEX_CMD  = ["cmd", "/c", f"{_NPM}\\codex.cmd", "exec", "--skip-git-repo-check"]
-_GEMINI_BASE = ["cmd", "/c", f"{_NPM}\\gemini.cmd"]
+# OS별 CLI 경로 자동 감지
+import platform
+import shutil
+
+def _resolve_cmd(name, win_args, mac_args):
+    """Windows: npm 절대경로 .cmd / Mac·Linux: PATH에서 찾기"""
+    if platform.system() == "Windows":
+        npm = r"C:\Users\User\AppData\Roaming\npm"
+        return ["cmd", "/c", f"{npm}\\{name}.cmd"] + win_args
+    else:
+        # Mac/Linux: shutil.which로 PATH 탐색, 없으면 이름 그대로
+        path = shutil.which(name) or name
+        return [path] + mac_args
+
+_CLAUDE_CMD  = _resolve_cmd("claude",  ["-p"],                        ["-p"])
+_CODEX_CMD   = _resolve_cmd("codex",   ["exec", "--skip-git-repo-check"], ["exec", "--skip-git-repo-check"])
+_GEMINI_BASE = _resolve_cmd("gemini",  [],                             [])
 
 def call_claude(prompt, timeout=600):
     """Phase 1: shell=False, stdin 직접 전달"""
@@ -287,28 +299,31 @@ def call_codex(prompt, timeout=600):
 
 
 def _call_codex_fallback(prompt, timeout=600):
-    """codex -p 방식 폴백 (stdin 미지원 시)"""
+    """codex stdin 미지원 시 temp file 폴백 (cross-platform)"""
+    import tempfile
+    tmp = None
     try:
-        import tempfile
         with tempfile.NamedTemporaryFile(mode='w', suffix='.txt', delete=False,
                                           encoding='utf-8', dir=str(LOG_DIR)) as f:
-            f.write(prompt)
-            tmp = f.name
-        try:
-            r = subprocess.run(
-                f'type "{tmp}" | codex exec --skip-git-repo-check',
-                capture_output=True, text=True, timeout=timeout,
-                encoding="utf-8", errors="replace", shell=True
-            )
-            out = r.stdout.strip()
-            if r.returncode != 0 and not out:
-                return f"[ERROR] Codex (rc={r.returncode}): {r.stderr[:500]}"
-            return out if out else f"[ERROR] Codex empty: {r.stderr[:300]}"
-        finally:
-            try: os.unlink(tmp)
-            except: pass
+            f.write(prompt); tmp = f.name
+        if platform.system() == "Windows":
+            npm = r"C:\Users\User\AppData\Roaming\npm"
+            cmd = f'type "{tmp}" | "{npm}\\codex.cmd" exec --skip-git-repo-check'
+        else:
+            codex_path = shutil.which("codex") or "codex"
+            cmd = f'cat "{tmp}" | "{codex_path}" exec --skip-git-repo-check'
+        r = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout,
+                           encoding="utf-8", errors="replace", shell=True)
+        out = r.stdout.strip()
+        if r.returncode != 0 and not out:
+            return f"[ERROR] Codex (rc={r.returncode}): {r.stderr[:500]}"
+        return out if out else f"[ERROR] Codex empty: {r.stderr[:300]}"
     except subprocess.TimeoutExpired: return "[ERROR] Codex timeout"
     except Exception as e: return f"[ERROR] Codex fallback: {str(e)[:500]}"
+    finally:
+        if tmp:
+            try: os.unlink(tmp)
+            except: pass
 
 
 def _call_gemini_with_model(prompt, model, timeout=600):
@@ -336,15 +351,21 @@ def _call_gemini_with_model(prompt, model, timeout=600):
 
 
 def _call_gemini_fallback(prompt, model, timeout=600):
-    """Gemini stdin 미지원 시 temp file 폴백"""
+    """Gemini stdin 미지원 시 temp file 폴백 (cross-platform)"""
     import tempfile
     tmp = None
     try:
         with tempfile.NamedTemporaryFile(mode='w', suffix='.txt', delete=False,
                                           encoding='utf-8', dir=str(LOG_DIR)) as f:
             f.write(prompt); tmp = f.name
+        if platform.system() == "Windows":
+            npm = r"C:\Users\User\AppData\Roaming\npm"
+            cmd = f'type "{tmp}" | "{npm}\\gemini.cmd" --model {model}'
+        else:
+            gemini_path = shutil.which("gemini") or "gemini"
+            cmd = f'cat "{tmp}" | "{gemini_path}" --model {model}'
         r = subprocess.run(
-            f'type "{tmp}" | gemini --model {model}',
+            cmd,
             capture_output=True, text=True, timeout=timeout,
             encoding="utf-8", errors="replace", shell=True
         )
