@@ -1,0 +1,5 @@
+#!/usr/bin/env bash
+# Horcrux CLI — shortcut for adaptive_orchestrator.py
+# Usage: horcrux "fix typo" / horcrux --mode full "task" / horcrux classify "task"
+DIR="$(cd "$(dirname "$0")" && pwd)"
+exec python "$DIR/adaptive_orchestrator.py" "$@"

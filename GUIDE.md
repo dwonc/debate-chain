@@ -179,24 +179,24 @@ python server.py          # Web UI → http://localhost:5000
 ### CLI
 ```bash
 # Auto (자동 분류 → 최적 엔진)
-python adaptive_orchestrator.py "fix typo in README"
+horcrux "fix typo in README"
 
 # 모드 수동 지정
-python adaptive_orchestrator.py --mode fast "간단한 버그 수정"
-python adaptive_orchestrator.py --mode standard "새 API 엔드포인트 추가"
-python adaptive_orchestrator.py --mode full --risk high -f task.txt
-python adaptive_orchestrator.py --mode parallel --pair-mode pair3 "풀스택 앱"
+horcrux --mode fast "간단한 버그 수정"
+horcrux --mode standard "새 API 엔드포인트 추가"
+horcrux --mode full --risk high -f task.txt
+horcrux --mode parallel --pair-mode pair3 "풀스택 앱"
 
 # 분류만 미리보기 (실행 안 함)
-python adaptive_orchestrator.py classify "아키텍처 리팩토링"
+horcrux classify "아키텍처 리팩토링"
 
 # Flask 서버 경유 (웹 UI 스레드와 공유)
-python adaptive_orchestrator.py --server "브레인스토밍해줘"
-python adaptive_orchestrator.py --server classify "이 작업 뭘로 돌릴지"
-
-# Legacy debate (직접 debate loop)
-python orchestrator.py "Python으로 JWT 인증 구현해줘"
+horcrux --server "브레인스토밍해줘"
+horcrux --server classify "이 작업 뭘로 돌릴지"
 ```
+
+> Windows: `horcrux.bat`, Linux/Mac: `./horcrux`
+> 또는 직접: `python adaptive_orchestrator.py "task"`
 
 
 ## API 레퍼런스
