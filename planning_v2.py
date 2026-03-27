@@ -160,7 +160,8 @@ CRITICAL: Read the task carefully. If the task specifies a desired output format
 If the task does NOT specify an output format, reply JSON only:
 {{"content":"<detailed output>","approach":"<1 sentence>","decisions":[{{"topic":"<what>","choice":"<chosen>","reason":"<why>"}}],"rejected_alternatives":["considered but rejected approach 1","considered but rejected approach 2"],"key_messages":["core point 1","core point 2"]}}
 
-Write in the same language as the task. Be thorough and detailed."""
+Write in the same language as the task. Be thorough and detailed.
+IMPORTANT: Complete ALL requested items. If asked for N items, output ALL N items. Do NOT truncate, abbreviate, or stop early. If output is long, that is fine — completeness is mandatory."""
 
 SYNTH_PROMPT_V2 = """You are a master synthesizer. Three experts independently produced outputs for the same task.
 Synthesize the BEST parts of all three into a single, superior result.
@@ -189,7 +190,7 @@ Instructions:
 Reply JSON only:
 {{"content":"<synthesized complete output>","structure_summary":"<how the output is organized>","key_messages":["msg1","msg2","msg3"],"source_decisions":[{{"topic":"<what>","choice":"<chosen>","reason":"<why>","from":"A|B|C|merged"}}],"strengths_preserved":["from A: ...","from B: ...","from C: ..."]}}
 
-Write in the same language as the task. Be thorough — do NOT truncate."""
+Write in the same language as the task. Be thorough — do NOT truncate or abbreviate. Complete ALL sections fully."""
 
 CONTENT_CRITIC_PROMPT = """You are a {role} critic. Critically evaluate this output.
 

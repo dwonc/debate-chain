@@ -728,12 +728,46 @@ def call_codex(prompt: str, timeout: int = 600) -> str:
 
 
 def _call_gemini_with_model(prompt: str, model: str, timeout: int = 300):
-    """Gemini CLI 단일 모델 호출. (out, status) 반환"""
+    """Gemini 호출. API 키 있으면 API(max_output_tokens 제어), 없으면 CLI fallback."""
     if model not in GEMINI_MODELS:
         return "[ERROR] Invalid Gemini model", "error"
 
     prompt = _truncate_prompt(prompt, MAX_PROMPT_CHARS)
 
+    # ── 방법 1: Gemini API (GEMINI_API_KEY 있으면 우선 사용) ──
+    gemini_key = os.environ.get("GEMINI_API_KEY", "")
+    if gemini_key:
+        try:
+            import requests as _req
+            api_url = f"https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent?key={gemini_key}"
+            resp = _req.post(api_url, json={
+                "contents": [{"parts": [{"text": prompt}]}],
+                "generationConfig": {
+                    "maxOutputTokens": 16384,
+                    "temperature": 0.7,
+                },
+            }, timeout=timeout)
+            if resp.status_code == 429:
+                return None, "quota"
+            if resp.status_code == 200:
+                data = resp.json()
+                candidates = data.get("candidates", [])
+                if candidates:
+                    parts = candidates[0].get("content", {}).get("parts", [])
+                    text = "".join(p.get("text", "") for p in parts).strip()
+                    if text:
+                        return text, "ok"
+                return "[ERROR] Gemini API empty response", "error"
+            else:
+                err_text = resp.text[:300]
+                if "quota" in err_text.lower() or "exhausted" in err_text.lower():
+                    return None, "quota"
+                return f"[ERROR] Gemini API {resp.status_code}: {err_text}", "error"
+        except Exception as e:
+            # API 실패 → CLI fallback
+            pass
+
+    # ── 방법 2: Gemini CLI (fallback) ──
     def _run(p: str, t: int):
         try:
             if platform.system() == "Windows":
