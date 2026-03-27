@@ -85,7 +85,7 @@ PROFILE_CONFIG = {
             "gemini": "user advocate finding unmet needs and hidden opportunities",
         },
         "critic_dimensions": ["novelty", "diversity", "feasibility", "blind_spots"],
-        "critic_score_schema": '{{"scores":{{"novelty":<1-10>,"diversity":<1-10>,"feasibility":<1-10>,"blind_spots":<1-10>}},"overall":<1-10>,"summary":"<2 sentences>","issues":[{{"sev":"critical|major|minor","desc":"<issue>","fix":"<suggestion>","dimension":"novelty|diversity|feasibility|blind_spots"}}],"regressions":["<regressed issue if any>"],"strengths":["s1"]}}',
+        "critic_score_schema": '{{"scores":{{"novelty":<1-10>,"diversity":<1-10>,"feasibility":<1-10>,"blind_spots":<1-10>}},"overall":<1-10>,"summary":"<2 sentences>","issues":[{{"id":"ISS-<NNN>","sev":"critical|major|minor","desc":"<issue>","fix":"<suggestion>","dimension":"novelty|diversity|feasibility|blind_spots"}}],"resolved_from_previous":[{{"id":"ISS-<NNN>","status":"resolved|unresolved"}}],"regressions":["<regressed issue if any>"],"strengths":["s1"]}}',
         "critic_roles": {
             "codex": "idea diversity and technical feasibility critic",
             "gemini": "novelty and blind spot detection critic",
@@ -103,7 +103,7 @@ PROFILE_CONFIG = {
             "gemini": "audience-focused content strategist and editor",
         },
         "critic_dimensions": ["clarity", "structure", "persuasiveness", "completeness"],
-        "critic_score_schema": '{{"scores":{{"clarity":<1-10>,"structure":<1-10>,"persuasiveness":<1-10>,"completeness":<1-10>}},"overall":<1-10>,"summary":"<2 sentences>","issues":[{{"sev":"critical|major|minor","desc":"<issue>","fix":"<suggestion>","dimension":"clarity|structure|persuasiveness|completeness"}}],"regressions":["<regressed issue if any>"],"strengths":["s1"]}}',
+        "critic_score_schema": '{{"scores":{{"clarity":<1-10>,"structure":<1-10>,"persuasiveness":<1-10>,"completeness":<1-10>}},"overall":<1-10>,"summary":"<2 sentences>","issues":[{{"id":"ISS-<NNN>","sev":"critical|major|minor","desc":"<issue>","fix":"<suggestion>","dimension":"clarity|structure|persuasiveness|completeness"}}],"resolved_from_previous":[{{"id":"ISS-<NNN>","status":"resolved|unresolved"}}],"regressions":["<regressed issue if any>"],"strengths":["s1"]}}',
         "critic_roles": {
             "codex": "structure and completeness critic",
             "gemini": "clarity, persuasiveness, and audience-fit critic",
@@ -121,7 +121,7 @@ PROFILE_CONFIG = {
             "gemini": "product manager and user advocate",
         },
         "critic_dimensions": ["correctness", "completeness", "coherence", "actionability"],
-        "critic_score_schema": '{{"scores":{{"correctness":<1-10>,"completeness":<1-10>,"coherence":<1-10>,"actionability":<1-10>}},"overall":<1-10>,"summary":"<2 sentences>","issues":[{{"sev":"critical|major|minor","desc":"<issue>","fix":"<suggestion>","dimension":"correctness|completeness|coherence|actionability"}}],"regressions":["<regressed issue if any>"],"strengths":["s1"]}}',
+        "critic_score_schema": '{{"scores":{{"correctness":<1-10>,"completeness":<1-10>,"coherence":<1-10>,"actionability":<1-10>}},"overall":<1-10>,"summary":"<2 sentences>","issues":[{{"id":"ISS-<NNN>","sev":"critical|major|minor","desc":"<issue>","fix":"<suggestion>","dimension":"correctness|completeness|coherence|actionability"}}],"resolved_from_previous":[{{"id":"ISS-<NNN>","status":"resolved|unresolved"}}],"regressions":["<regressed issue if any>"],"strengths":["s1"]}}',
         "critic_roles": {
             "codex": "technical feasibility and implementation quality critic",
             "gemini": "user experience, clarity, and market fit critic",
@@ -774,8 +774,10 @@ def _run_content_synthesizer(task: str, gen_results: dict, claude_model: str, st
 
 
 def _run_content_multi_critic(task: str, content: str, previously_fixed: str,
-                              state: dict, task_type: str = "hybrid") -> dict:
-    """Content profile용 multi-critic: Core(Codex+Gemini) + Aux 병렬. profile-aware 차원/역할."""
+                              state: dict, task_type: str = "hybrid",
+                              prev_core_avg: float = 0.0) -> dict:
+    """Content profile용 multi-critic: Core(Codex+Gemini) + Aux 병렬. profile-aware 차원/역할.
+    P4: prev_core_avg >= 8.0이면 Aux skip (이미 수렴 가까우면 Aux 불필요)."""
     profile = _get_profile(task_type)
     critic_roles = profile["critic_roles"]
     score_schema = profile["critic_score_schema"]
@@ -786,13 +788,19 @@ def _run_content_multi_critic(task: str, content: str, previously_fixed: str,
     all_scores = {}
     seen = set()
 
-    available_aux = [
-        ep for ep in (_AUX_CRITIC_ENDPOINTS or [])
-        if os.environ.get(ep[2])
-    ] if _AUX_CRITIC_ENDPOINTS and _call_aux_critic else []
+    # P4 simplified: core score 평균 >= 8.0이면 aux skip
+    import sys
+    if prev_core_avg >= 8.0:
+        available_aux = []
+        sys.stderr.write(f"  [P4] Aux SKIPPED — prev_core_avg={prev_core_avg:.1f} >= 8.0\n")
+        sys.stderr.flush()
+    else:
+        available_aux = [
+            ep for ep in (_AUX_CRITIC_ENDPOINTS or [])
+            if os.environ.get(ep[2])
+        ] if _AUX_CRITIC_ENDPOINTS and _call_aux_critic else []
 
     # BUG-3 debug: aux critic 가용성 로깅
-    import sys
     sys.stderr.write(f"  [CRITIC] AUX_ENDPOINTS={'set' if _AUX_CRITIC_ENDPOINTS else 'None'}, call_aux={'set' if _call_aux_critic else 'None'}, available={len(available_aux)}\n")
     for ep in available_aux:
         sys.stderr.write(f"    → {ep[0]} ({ep[3]}): key={'SET' if os.environ.get(ep[2]) else 'MISSING'}\n")
@@ -1043,7 +1051,8 @@ def run_planning_harness(planning_id: str, task: str, task_type: str = "hybrid",
                 _record_phase_transition(state, f"content:critic_r{r}")
                 state["phase_detail"] = f"Round {r}/{max_rounds} — multi-critic ({task_type})"
                 prev_text = "\n".join(previously_fixed[-15:]) if previously_fixed else "None"
-                critic_merged = _run_content_multi_critic(task, content, prev_text, state, task_type)
+                _prev_core = state.get("avg_score", 0) if r > 1 else 0.0
+                critic_merged = _run_content_multi_critic(task, content, prev_text, state, task_type, prev_core_avg=_prev_core)
                 if state.get("abort"):
                     break
 
@@ -1065,6 +1074,24 @@ def run_planning_harness(planning_id: str, task: str, task_type: str = "hybrid",
                 if diagnostics["converged"]:
                     state["phase_detail"] = f"Converged at round {r} (score {c_score:.1f})"
                     break
+
+                # P3: resolved_ratio 기반 조기 종료 — 이슈 해결률이 낮으면 추가 라운드 무의미
+                if r >= 2:
+                    resolved_entries = critic_merged.get("resolved_from_previous", [])
+                    if resolved_entries:
+                        resolved_count = sum(1 for e in resolved_entries if e.get("status") == "resolved")
+                        total_prev = len(resolved_entries)
+                        resolved_ratio = resolved_count / total_prev if total_prev > 0 else 0
+                        if resolved_ratio >= 0.8:
+                            # 80% 이상 해결 → 수렴으로 간주
+                            state["phase_detail"] = f"Resolved ratio {resolved_ratio:.0%} ≥ 80% — early exit at R{r}"
+                            import sys; sys.stderr.write(f"  [P3] resolved_ratio={resolved_ratio:.0%} — early converge\n"); sys.stderr.flush()
+                            break
+                        elif resolved_ratio < 0.5 and r >= 2:
+                            # 50% 미만 해결 + 2라운드 이상 → 추가 라운드 무의미
+                            state["phase_detail"] = f"Resolved ratio {resolved_ratio:.0%} < 50% — stalled at R{r}"
+                            import sys; sys.stderr.write(f"  [P3] resolved_ratio={resolved_ratio:.0%} — stalled, stopping\n"); sys.stderr.flush()
+                            break
 
                 if r >= max_rounds:
                     state["phase_detail"] = f"Max rounds reached (score {c_score:.1f})"
