@@ -933,11 +933,21 @@ def run_multi_critic(task, solution, previously_fixed_text):
         aux_scores[name] = norm["score"]
         aux_norms.append(norm)
 
-    # 점수 계산: Core min * 0.8 + Aux avg * 0.2 (aux 있을 때)
+    # 점수 계산: Core min * core_weight + Aux avg * aux_weight
+    # config.json의 scoring.core_weight 사용, 없으면 0.8/0.2 기본값
+    _scoring_cfg = {}
+    try:
+        with open(Path(__file__).parent / "config.json", "r", encoding="utf-8") as _cf:
+            _scoring_cfg = json.load(_cf).get("scoring", {})
+    except Exception:
+        pass
+    _core_w = _scoring_cfg.get("core_weight", 0.8)
+    _aux_w = _scoring_cfg.get("aux_weight", 0.2)
+
     core_min = min(codex_score, gemini_score)
     if aux_scores:
         aux_avg = sum(aux_scores.values()) / len(aux_scores)
-        overall = core_min * 0.8 + aux_avg * 0.2
+        overall = core_min * _core_w + aux_avg * _aux_w
     else:
         overall = core_min
 
@@ -1076,7 +1086,7 @@ def run_debate(debate_id, task, threshold, max_rounds, initial_solution="", clau
             scores_str = " | ".join(f"{k}:{v}" for k, v in critic_merged["scores"].items())
             critic_scores_str = " | ".join(f"{k}:{v:.1f}" for k, v in critic_merged["critic_scores"].items())
             aux_n = critic_merged.get("aux_count", 0)
-            scoring_label = f"Core*0.8+Aux({aux_n})*0.2" if aux_n else "min of Codex+Gemini"
+            scoring_label = f"Core*{_core_w}+Aux({aux_n})*{_aux_w}" if aux_n else "min of Codex+Gemini"
             disp = f"{c_score:.1f}/10 ({scoring_label}) [{critic_scores_str}]\n"
             disp += f"Dims: [{scores_str}]\n"
             disp += f"{critic_merged.get('summary', '')}\n"
@@ -2561,6 +2571,27 @@ def analytics_heuristic():
         from core.adaptive.analytics import suggest_heuristic_refinements
         data = suggest_heuristic_refinements()
         return jsonify(data.to_dict())
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+
+@app.route("/api/analytics/scoring")
+def analytics_scoring():
+    """현재 scoring 가중치 조회 (dry_run)."""
+    try:
+        from core.adaptive.analytics import auto_tune_scoring_weights
+        return jsonify(auto_tune_scoring_weights(dry_run=True))
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+
+@app.route("/api/analytics/scoring/apply", methods=["POST"])
+def analytics_scoring_apply():
+    """scoring 가중치 자동 튜닝 → config.json 저장."""
+    try:
+        from core.adaptive.analytics import auto_tune_scoring_weights
+        result = auto_tune_scoring_weights(dry_run=False)
+        return jsonify(result)
     except Exception as e:
         return jsonify({"error": str(e)}), 500
 

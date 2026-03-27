@@ -400,6 +400,103 @@ def compute_critic_reliability(log_dir: Optional[Path] = None) -> Dict[str, Crit
 
 
 # ═══════════════════════════════════════════
+# 4.5 Scoring Weight Auto-Tuning
+# ═══════════════════════════════════════════
+
+def auto_tune_scoring_weights(
+    min_reviews: int = 10,
+    dry_run: bool = True,
+    config_path: Optional[Path] = None,
+) -> dict:
+    """
+    critic reliability 데이터 기반으로 Core/Aux 가중치 자동 튜닝.
+
+    알고리즘:
+      1. critic별 reliability_score (0~1) 와 recommended_weight (0.5~1.5) 수집
+      2. Core critics (codex, gemini)의 평균 weight → core_raw
+      3. Aux critics (Groq, DeepSeek, OpenRouter)의 평균 weight → aux_raw
+      4. 정규화: core_weight = core_raw / (core_raw + aux_raw)
+      5. 안전 범위: core_weight를 0.6~0.95로 clamp (aux가 아무리 좋아도 Core < 60% 안 됨)
+      6. min_reviews 미달 시 기본값 0.8/0.2 유지
+
+    Returns:
+      {"core_weight": float, "aux_weight": float, "per_critic": {...}, "applied": bool, "reason": str}
+    """
+    reliability = compute_critic_reliability()
+
+    # 데이터 충분한지 체크
+    total_reviews = sum(r.total_reviews for r in reliability.values())
+    if total_reviews < min_reviews:
+        return {
+            "core_weight": 0.8, "aux_weight": 0.2,
+            "per_critic": {},
+            "applied": False,
+            "reason": f"insufficient data: {total_reviews}/{min_reviews} reviews",
+        }
+
+    # Core / Aux 분류
+    core_names = {"codex", "gemini", "claude"}
+    core_weights = []
+    aux_weights = []
+    per_critic = {}
+
+    for model, rel in reliability.items():
+        w = rel.recommended_weight
+        per_critic[model] = {
+            "reliability": rel.reliability_score,
+            "weight": w,
+            "reviews": rel.total_reviews,
+            "avg_delta": rel.avg_score_delta,
+        }
+        model_lower = model.lower()
+        if any(c in model_lower for c in core_names):
+            core_weights.append(w)
+        else:
+            aux_weights.append(w)
+
+    # 평균 weight 계산
+    core_raw = sum(core_weights) / len(core_weights) if core_weights else 1.0
+    aux_raw = sum(aux_weights) / len(aux_weights) if aux_weights else 0.5
+
+    # 정규화 + clamp
+    total = core_raw + aux_raw
+    core_weight = core_raw / total if total > 0 else 0.8
+    core_weight = max(0.6, min(0.95, core_weight))  # 안전 범위
+    aux_weight = round(1.0 - core_weight, 3)
+    core_weight = round(core_weight, 3)
+
+    result = {
+        "core_weight": core_weight,
+        "aux_weight": aux_weight,
+        "per_critic": per_critic,
+        "applied": False,
+        "reason": "dry_run" if dry_run else "applied",
+    }
+
+    # config.json에 저장
+    if not dry_run:
+        cfg_path = config_path or Path(__file__).parent.parent.parent / "config.json"
+        try:
+            with open(cfg_path, "r", encoding="utf-8") as f:
+                cfg = json.load(f)
+            if "scoring" not in cfg:
+                cfg["scoring"] = {}
+            cfg["scoring"]["core_weight"] = core_weight
+            cfg["scoring"]["aux_weight"] = aux_weight
+            cfg["scoring"]["per_critic_weights"] = per_critic
+            cfg["scoring"]["last_tuned"] = datetime.now().isoformat()
+            cfg["scoring"]["total_reviews"] = total_reviews
+            with open(cfg_path, "w", encoding="utf-8") as f:
+                json.dump(cfg, f, ensure_ascii=False, indent=2)
+            result["applied"] = True
+            result["reason"] = f"applied to {cfg_path}"
+        except Exception as e:
+            result["reason"] = f"save failed: {e}"
+
+    return result
+
+
+# ═══════════════════════════════════════════
 # 5. Mode Quality/Latency Analytics Dashboard
 # ═══════════════════════════════════════════
 
