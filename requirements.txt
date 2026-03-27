@@ -16,5 +16,10 @@ duckduckgo-search>=6.0     # web_search 툴 (선택)
 # anthropic>=0.40           # Claude SDK backend
 # openai>=1.50              # OpenAI SDK backend
 
+# Artifact file generation (optional — fallback to markdown if missing)
+python-pptx>=0.6              # PPT → .pptx
+reportlab>=4.0                # PDF → .pdf (fallback renderer)
+# weasyprint>=60.0            # PDF → .pdf (best quality, needs system deps)
+
 # 기타
 python-dotenv>=1.0

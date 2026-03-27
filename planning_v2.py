@@ -1239,6 +1239,26 @@ def run_planning_harness(planning_id: str, task: str, task_type: str = "hybrid",
             state["final_solution"] = rendered
             state["artifact_spec"] = spec
 
+            # 실제 파일 생성 (.pptx / .pdf / .md)
+            try:
+                from core.artifact_renderer import render_to_file
+                output_dir = str(Path(_LOG_DIR).parent / "output")
+                file_path = render_to_file(spec, artifact_type, output_dir)
+                state["artifact_file"] = file_path
+                state["messages"].append({
+                    "role": "file_generated",
+                    "label": f"File Generated ({artifact_type})",
+                    "content": f"Saved: {file_path}",
+                    "ts": datetime.now().isoformat(),
+                })
+                import sys
+                sys.stderr.write(f"  [ARTIFACT] File saved: {file_path}\n")
+                sys.stderr.flush()
+            except Exception as file_err:
+                import sys
+                sys.stderr.write(f"  [ARTIFACT] File generation failed: {file_err}\n")
+                sys.stderr.flush()
+
         else:
             # brainstorm/portfolio: content가 최종 결과
             state["final_solution"] = content
