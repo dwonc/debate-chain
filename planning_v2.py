@@ -695,7 +695,8 @@ def _run_content_generators(task: str, claude_model: str, state: dict,
     profile = _get_profile(task_type)
     roles = profile["generator_roles"]
     instruction = profile["generator_instruction"]
-    prompts = {name: CONTENT_GENERATOR_PROMPT.format(
+    ctx_prefix = state.get("_project_context_prefix", "")
+    prompts = {name: ctx_prefix + CONTENT_GENERATOR_PROMPT.format(
                    task=task, role=role, profile_instruction=instruction)
                for name, role in roles.items()}
 
@@ -731,7 +732,8 @@ def _run_content_generators(task: str, claude_model: str, state: dict,
 
 def _run_content_synthesizer(task: str, gen_results: dict, claude_model: str, state: dict) -> tuple:
     """Phase 2: Synthesize 3 outputs into 1."""
-    prompt = SYNTH_PROMPT_V2.format(
+    ctx_prefix = state.get("_project_context_prefix", "")
+    prompt = ctx_prefix + SYNTH_PROMPT_V2.format(
         task=task,
         plan_a=gen_results.get("claude", {}).get("display", "N/A"),
         plan_b=gen_results.get("codex", {}).get("display", "N/A"),
@@ -949,7 +951,8 @@ def run_planning_harness(planning_id: str, task: str, task_type: str = "hybrid",
                          artifact_type: str = "doc", claude_model: str = "",
                          audience: str = "general", purpose: str = "",
                          tone: str = "professional",
-                         threshold: float = 7.5, max_rounds: int = 3):
+                         threshold: float = 7.5, max_rounds: int = 3,
+                         project_dir: str = ""):
     """Layer 3 통합 엔트리포인트.
 
     task_type:
@@ -965,6 +968,26 @@ def run_planning_harness(planning_id: str, task: str, task_type: str = "hybrid",
     state["_phase_avgs"] = _compute_phase_averages_from_logs()
     content = ""
     synth_data = None
+
+    # .horcrux context 로드
+    _project_context_prefix = ""
+    if project_dir:
+        try:
+            from core.adaptive.context_loader import ProjectContext
+            ctx = ProjectContext.load(project_dir)
+            if ctx.loaded:
+                _project_context_prefix = ctx.build_system_prefix() + "\n\n"
+                # config overrides
+                if ctx.get_config_override("threshold"):
+                    threshold = ctx.get_config_override("threshold")
+                if ctx.get_config_override("max_rounds"):
+                    max_rounds = ctx.get_config_override("max_rounds")
+                import sys
+                sys.stderr.write(f"  [CONTEXT] Loaded .horcrux context: {ctx.to_dict()}\n")
+                sys.stderr.flush()
+        except Exception:
+            pass
+    state["_project_context_prefix"] = _project_context_prefix
 
     try:
         # profile 기반 threshold 조정 (brainstorm은 낮춤)
@@ -1042,7 +1065,8 @@ def run_planning_harness(planning_id: str, task: str, task_type: str = "hybrid",
                 if len(content) > 8000:
                     _content_for_rev += f"\n\n[... TRUNCATED {len(content) - 8000} chars. Focus on fixing issues above, do NOT reproduce the full document. Only output changed sections with context.]"
 
-                improve_prompt = CONTENT_IMPROVE_PROMPT.format(
+                _ctx_prefix = state.get("_project_context_prefix", "")
+                improve_prompt = _ctx_prefix + CONTENT_IMPROVE_PROMPT.format(
                     task=task, content=_content_for_rev,
                     blocking_issues=_format_issues_compact(rev_focus.get("blocking_issues", [])),
                     regressions="\n".join(str(rr) for rr in rev_focus.get("regressions", [])) or "None",
@@ -1301,10 +1325,11 @@ def register_planning_v2_routes(app):
             "finished_at": None,
         }
 
+        project_dir = data.get("project_dir", "")
         t = threading.Thread(
             target=run_planning_harness,
             args=(planning_id, task, task_type, artifact_type, claude_model,
-                  audience, purpose, tone, threshold, max_rounds),
+                  audience, purpose, tone, threshold, max_rounds, project_dir),
             daemon=True,
         )
         t.start()

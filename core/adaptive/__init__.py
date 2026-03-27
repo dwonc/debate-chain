@@ -112,6 +112,9 @@ from .interactive import (
     InvalidStateTransition,
     IrreversibleSideEffectError,
 )
+from .context_loader import (
+    ProjectContext,
+)
 from .analytics import (
     compute_latency_percentiles,
     auto_tune_timeouts,
