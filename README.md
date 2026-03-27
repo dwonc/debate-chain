@@ -107,9 +107,19 @@ MCP 도구 5개: `run` / `check` / `classify` / `analytics` / `horcrux_test`
 
 ### CLI
 ```bash
+# Auto (자동 분류)
 python adaptive_orchestrator.py "fix typo in README"
+
+# 모드 수동 지정
 python adaptive_orchestrator.py --mode fast "간단한 버그 수정"
-python adaptive_orchestrator.py --mode full_horcrux --risk high -f task.txt
+python adaptive_orchestrator.py --mode full --risk high -f task.txt
+python adaptive_orchestrator.py --mode parallel --pair-mode pair3 "풀스택 앱 만들어줘"
+
+# 분류만 미리보기
+python adaptive_orchestrator.py classify "아키텍처 리팩토링해줘"
+
+# Flask 서버 경유 (웹 UI 스레드와 공유)
+python adaptive_orchestrator.py --server "브레인스토밍해줘 AI 추천 시스템"
 ```
 
 ## 아키텍처

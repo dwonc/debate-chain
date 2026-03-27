@@ -547,35 +547,119 @@ def _run_full_horcrux(
 def main():
     import argparse
 
-    parser = argparse.ArgumentParser(description="Adaptive Horcrux v5.3")
-    parser.add_argument("task", nargs="?", help="Task description")
+    parser = argparse.ArgumentParser(
+        description="Horcrux v8 — Adaptive Multi-AI Orchestration CLI",
+        epilog="""Examples:
+  python adaptive_orchestrator.py "fix typo in README"
+  python adaptive_orchestrator.py --mode fast "simple bug fix"
+  python adaptive_orchestrator.py --mode full --risk high -f task.txt
+  python adaptive_orchestrator.py --mode parallel "build frontend + backend"
+  python adaptive_orchestrator.py classify "refactor architecture"
+""",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+    )
+    parser.add_argument("task", nargs="?", help="Task description (or 'classify' to preview routing)")
+    parser.add_argument("task_extra", nargs="?", help="Task when first arg is 'classify'")
     parser.add_argument("--file", "-f", help="Read task from file")
-    parser.add_argument("--mode", "-m", choices=["fast", "standard", "full_horcrux"],
-                        help="Force mode override")
+    parser.add_argument("--mode", "-m", default="auto",
+                        choices=["auto", "fast", "standard", "full", "parallel"],
+                        help="Mode (default: auto)")
     parser.add_argument("--type", "-t", default="code",
                         choices=["code", "document", "artifact", "analysis"],
                         help="Task type")
     parser.add_argument("--files", type=int, default=1, help="Number of files touched")
-    parser.add_argument("--scope", default="small", choices=["small", "medium", "large"])
-    parser.add_argument("--risk", default="low", choices=["low", "medium", "high"])
+    parser.add_argument("--scope", default="medium", choices=["small", "medium", "large"])
+    parser.add_argument("--risk", default="medium", choices=["low", "medium", "high"])
     parser.add_argument("--artifact", default="none", choices=["none", "ppt", "pdf", "doc"])
+    parser.add_argument("--iterations", type=int, default=3, help="Self-improve iterations")
+    parser.add_argument("--pair-mode", default="pair2", choices=["pair2", "pair3"],
+                        help="Parallel mode: pair2 or pair3")
+    parser.add_argument("--server", action="store_true",
+                        help="Use running Flask server instead of direct orchestrator")
 
     args = parser.parse_args()
 
-    if args.file:
+    # classify 서브커맨드
+    is_classify = args.task == "classify"
+    if is_classify:
+        task = args.task_extra or ""
+    elif args.file:
         with open(args.file, "r", encoding="utf-8") as f:
             task = f.read().strip()
     elif args.task:
         task = args.task
     else:
-        print("Usage: python adaptive_orchestrator.py <task>")
-        print("       python adaptive_orchestrator.py --file <task_file.txt>")
-        print("       python adaptive_orchestrator.py --mode fast <task>")
+        parser.print_help()
         sys.exit(1)
+
+    if not task.strip():
+        print("Error: task is required")
+        sys.exit(1)
+
+    # --server: Flask API 경유
+    if args.server:
+        import requests
+        base = "http://localhost:5000"
+        if is_classify:
+            r = requests.post(f"{base}/api/horcrux/classify", json={
+                "task": task, "scope": args.scope, "risk": args.risk,
+                "artifact_type": args.artifact,
+            }, timeout=30).json()
+            print(f"\nMode:   {r.get('recommended_mode')}")
+            print(f"Engine: {r.get('internal_engine')}")
+            print(f"Intent: {r.get('detected_intent')}")
+            print(f"Conf:   {r.get('confidence', 0):.0%}")
+            print(f"Reason: {r.get('reason')}")
+            return
+
+        r = requests.post(f"{base}/api/horcrux/run", json={
+            "task": task, "mode": args.mode, "scope": args.scope,
+            "risk": args.risk, "artifact_type": args.artifact,
+            "pair_mode": args.pair_mode, "iterations": args.iterations,
+        }, timeout=600).json()
+
+        if r.get("error"):
+            print(f"Error: {r['error']}")
+            sys.exit(1)
+        if r.get("solution"):
+            print(f"\n[{r.get('mode')} / {r.get('internal_engine')}] Score: {r.get('score', 0)}/10\n")
+            print(r["solution"])
+        elif r.get("job_id"):
+            print(f"Job started: {r['job_id']} ({r.get('internal_engine')})")
+            print(f"Poll: curl {base}/api/{_status_path(r['job_id'])}")
+        return
+
+    # classify only (direct)
+    if is_classify:
+        from core.adaptive import classify_task_complexity
+        mode_override = None if args.mode == "auto" else args.mode
+        result = classify_task_complexity(
+            task_description=task,
+            task_type=args.type,
+            num_files_touched=args.files,
+            estimated_scope=args.scope,
+            risk_level=args.risk,
+            artifact_type=args.artifact,
+            user_mode_override=mode_override,
+        )
+        d = result.to_dict()
+        print(f"\nMode:   {d['recommended_mode']}")
+        print(f"Engine: {d['internal_engine']}")
+        print(f"Intent: {d['detected_intent']}")
+        print(f"Conf:   {d['confidence']:.0%}")
+        print(f"Source: {d['routing_source']}")
+        print(f"Reason: {d['reason']}")
+        return
+
+    # direct execution
+    mode_override = None if args.mode == "auto" else args.mode
+    # full → full_horcrux (orchestrator 내부 호환)
+    if mode_override == "full":
+        mode_override = "full_horcrux"
 
     result = run_adaptive(
         task=task,
-        mode_override=args.mode,
+        mode_override=mode_override,
         task_type=args.type,
         num_files=args.files,
         scope=args.scope,
@@ -583,9 +667,21 @@ def main():
         artifact_type=args.artifact,
     )
 
+    mode = result.get("mode", "?")
+    score = result.get("final_score", 0)
+    converged = result.get("converged", False)
+    print(f"\n[{mode}] {'CONVERGED' if converged else 'COMPLETED'} — Score: {score}/10\n")
+
     if result.get("final_solution"):
-        print(f"\n📋 Final Solution:\n")
         print(result["final_solution"])
+
+
+def _status_path(job_id):
+    """job_id prefix → status endpoint path"""
+    if job_id.startswith("plan_"): return f"planning/status/{job_id}"
+    if job_id.startswith("pair_"): return f"pair/status/{job_id}"
+    if job_id.startswith("si_"): return f"self_improve/status/{job_id}"
+    return f"status/{job_id}"
 
 
 if __name__ == "__main__":
