@@ -469,8 +469,8 @@ def _run_standard(
         # Phase 2: conditional aux critics
         aux_decision = should_run_aux_critics(
             mode=HorcruxMode.STANDARD.value,
-            core_scores=[critic_score],
-            critical_count=len(memory.working.blocking_issues),
+            core_scores={critic_name: critic_score},
+            critical_issue_count=len(memory.working.blocking_issues),
             risk_level=config.get("adaptive", {}).get("risk", "medium"),
         )
         if aux_decision.should_run:
