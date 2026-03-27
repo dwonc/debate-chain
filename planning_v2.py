@@ -147,6 +147,8 @@ def _get_profile(task_type: str) -> dict:
 
 CONTENT_GENERATOR_PROMPT = """You are a {role} expert.
 
+CRITICAL: You are a text generator, not an interactive agent. Do NOT request file access, permissions, tool calls, directory listings, or any external actions. Do NOT mention working directories, session limitations, or access restrictions. Generate the requested content directly based on the task description and available information. If you lack specific implementation details, make reasonable assumptions and clearly mark them as [ASSUMPTION].
+
 ## Task
 {task}
 
@@ -162,6 +164,8 @@ Write in the same language as the task. Be thorough and detailed."""
 
 SYNTH_PROMPT_V2 = """You are a master synthesizer. Three experts independently produced outputs for the same task.
 Synthesize the BEST parts of all three into a single, superior result.
+
+CRITICAL: You are a text generator, not an interactive agent. Do NOT request file access, permissions, tool calls, or any external actions. Do NOT mention working directories or session limitations. Generate content directly.
 
 Task:
 {task}
@@ -189,6 +193,8 @@ Write in the same language as the task. Be thorough — do NOT truncate."""
 
 CONTENT_CRITIC_PROMPT = """You are a {role} critic. Critically evaluate this output.
 
+CRITICAL: You are a text evaluator, not an interactive agent. Do NOT request file access, permissions, tool calls, or any external actions. Evaluate based on the content provided below.
+
 Task:
 {task}
 
@@ -202,7 +208,9 @@ Analyze from your {role} perspective. Score each dimension 1-10.
 Reply JSON only:
 {score_schema}"""
 
-CONTENT_IMPROVE_PROMPT = """Task: {task}
+CONTENT_IMPROVE_PROMPT = """CRITICAL: You are a text improver, not an interactive agent. Do NOT request file access, permissions, tool calls, or any external actions. Do NOT mention working directories or session limitations. Improve the content directly based on the issues listed below. If you lack specific details, make reasonable assumptions marked as [ASSUMPTION].
+
+Task: {task}
 
 Current content:
 {content}
@@ -232,7 +240,9 @@ Fix blocking issues first. Do NOT rewrite passing areas.
 Reply JSON only:
 {{"content":"<improved complete output>","approach":"<1 sentence>","changes":["fix1","fix2"],"rejected_alternatives":["alt considered but not used"],"key_messages":["preserved or updated messages"]}}"""
 
-CONTENT_POLISH_PROMPT = """Task: {task}
+CONTENT_POLISH_PROMPT = """CRITICAL: You are a text polisher, not an interactive agent. Do NOT request file access, permissions, tool calls, or any external actions. Polish the content directly.
+
+Task: {task}
 
 Content to polish:
 {content}
@@ -253,6 +263,8 @@ Reply JSON only:
 # ═══════════════════════════════════════════
 
 ARTIFACT_SPEC_BUILDER_PROMPT = """You are a document architect. Convert finalized content into a structured artifact specification.
+
+CRITICAL: You are a text generator, not an interactive agent. Do NOT request file access, permissions, tool calls, or any external actions. Generate the spec directly.
 
 Task: {task}
 Artifact type: {artifact_type}
@@ -283,7 +295,9 @@ CRITICAL RULES:
 - Every section/slide must trace back to the source content
 - Reply JSON only"""
 
-ARTIFACT_CRITIC_PROMPT = """You are an artifact quality inspector. Check this {artifact_type} spec for:
+ARTIFACT_CRITIC_PROMPT = """CRITICAL: You are a text evaluator, not an interactive agent. Do NOT request file access, permissions, tool calls, or any external actions. Evaluate based on the content provided below.
+
+You are an artifact quality inspector. Check this {artifact_type} spec for:
 1. Information completeness — is anything from the source content missing?
 2. Flow/logic — do sections/slides follow a logical progression?
 3. Key message preservation — are all key messages present and prominent?
@@ -305,7 +319,9 @@ Artifact spec to evaluate:
 Reply JSON only:
 {{"overall":<1-10>,"scores":{{"completeness":<1-10>,"flow":<1-10>,"message_preservation":<1-10>,"no_drift":<1-10>}},"missing_content":["what's missing from source"],"drift_detected":["content added that wasn't in source"],"flow_issues":["where logic breaks"],"must_not_change_violations":["which protected items were changed"],"suggestions":["improvement1"]}}"""
 
-ARTIFACT_RENDERER_PROMPT = """You are a {artifact_type} renderer. Your ONLY job is to format the spec into final output.
+ARTIFACT_RENDERER_PROMPT = """CRITICAL: You are a text renderer, not an interactive agent. Do NOT request file access, permissions, tool calls, or any external actions. Render the content directly.
+
+You are a {artifact_type} renderer. Your ONLY job is to format the spec into final output.
 
 STRICT RULES:
 - Do NOT change any content, message, or data
@@ -760,6 +776,13 @@ def _run_content_multi_critic(task: str, content: str, previously_fixed: str,
         if os.environ.get(ep[2])
     ] if _AUX_CRITIC_ENDPOINTS and _call_aux_critic else []
 
+    # BUG-3 debug: aux critic 가용성 로깅
+    import sys
+    sys.stderr.write(f"  [CRITIC] AUX_ENDPOINTS={'set' if _AUX_CRITIC_ENDPOINTS else 'None'}, call_aux={'set' if _call_aux_critic else 'None'}, available={len(available_aux)}\n")
+    for ep in available_aux:
+        sys.stderr.write(f"    → {ep[0]} ({ep[3]}): key={'SET' if os.environ.get(ep[2]) else 'MISSING'}\n")
+    sys.stderr.flush()
+
     total_workers = 2 + len(available_aux)
 
     with concurrent.futures.ThreadPoolExecutor(max_workers=max(total_workers, 2)) as pool:
@@ -804,6 +827,15 @@ def _run_content_multi_critic(task: str, content: str, previously_fixed: str,
 
             parsed = _extract_json(raw) or {}
             score = _extract_score(parsed, raw) if _extract_score else 5.0
+
+            # BUG-5 fix: 빈 응답(confidence=0, issues=[]) 감지 → 제외
+            confidence = parsed.get("confidence", 1.0) if parsed else 0.0
+            issues = parsed.get("issues", [])
+            if confidence == 0.0 and not issues and score == 5.0:
+                import sys
+                sys.stderr.write(f"  [CRITIC] {name}: empty response (confidence=0, no issues) — excluded from scoring\n")
+                sys.stderr.flush()
+                continue
 
             # normalize
             normalized = _normalize_critic(parsed, name) if _normalize_critic else {"score": score, "issues": parsed.get("issues", []), "regressions": parsed.get("regressions", [])}

@@ -2205,8 +2205,19 @@ def horcrux_run():
                 artifact_type=data.get("artifact_type", "none"),
                 interactive=data.get("interactive", "batch"),
             )
+            # BUG-2 fix: 동기 응답에도 job_id 생성 → check()로 조회 가능
+            sync_id = "hrx_" + datetime.now().strftime("%Y%m%d_%H%M%S")
+            horcrux_states[sync_id] = {
+                "id": sync_id, "task": task, "status": "completed",
+                "phase": "completed", "messages": [],
+                "avg_score": result.get("final_score", 0),
+                "final_solution": result.get("final_solution", ""),
+                "created_at": datetime.now().isoformat(),
+                "finished_at": datetime.now().isoformat(),
+            }
             return jsonify({
                 "status": "converged" if result.get("converged") else "completed",
+                "job_id": sync_id,
                 "mode": mode,
                 "internal_engine": engine,
                 "score": result.get("final_score", 0),
