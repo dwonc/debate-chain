@@ -2232,32 +2232,38 @@ def horcrux_run():
         except Exception as e:
             return jsonify({"error": str(e)}), 500
 
-    # ── 비동기 엔진: planning_pipeline ──
+    # ── 비동기 엔진: planning_pipeline (직접 호출, self-HTTP 제거) ──
     if engine == "planning_pipeline":
         try:
-            r = None
-            with app.test_request_context(json={
-                "task": task,
-                "task_type": data.get("task_type", "brainstorm"),
-                "artifact_type": data.get("artifact_type", "doc"),
-                "audience": data.get("audience", "general"),
-                "tone": data.get("tone", "professional"),
-                "claude_model": data.get("claude_model", ""),
-            }):
-                # 내부적으로 planning 엔드포인트 호출
-                import requests as _req
-                resp = _req.post(f"http://localhost:5000/api/planning", json={
-                    "task": task,
-                    "task_type": data.get("task_type", "brainstorm"),
-                    "artifact_type": data.get("artifact_type", "doc"),
-                    "audience": data.get("audience", "general"),
-                    "tone": data.get("tone", "professional"),
-                    "claude_model": data.get("claude_model", ""),
-                }, timeout=10)
-                r = resp.json()
+            from planning_v2 import plannings, run_planning_harness
+            planning_id = "plan_" + datetime.now().strftime("%Y%m%d_%H%M%S_%f")[:23]
+            claude_model_resolved = {"opus": "claude-opus-4-6", "sonnet": "claude-sonnet-4-6"}.get(data.get("claude_model", ""), "")
+            task_type = data.get("task_type", "brainstorm")
+            artifact_type = data.get("artifact_type", "doc")
+            audience = data.get("audience", "general")
+            tone = data.get("tone", "professional")
+            project_dir = data.get("project_dir", "")
+
+            plannings[planning_id] = {
+                "id": planning_id, "task": task, "task_type": task_type,
+                "artifact_type": artifact_type, "status": "running",
+                "phase": "starting", "phase_detail": "", "messages": [],
+                "merged_plan": "", "final_plan": "", "final_solution": "",
+                "artifact_spec": None, "avg_score": 0, "error": None,
+                "abort": False, "claude_model": claude_model_resolved,
+                "audience": audience, "purpose": task[:200], "tone": tone,
+                "created_at": datetime.now().isoformat(), "finished_at": None,
+            }
+            t = threading.Thread(
+                target=run_planning_harness,
+                args=(planning_id, task, task_type, artifact_type, claude_model_resolved,
+                      audience, task[:200], tone, 7.5, 3, project_dir),
+                daemon=True,
+            )
+            t.start()
             return jsonify({
                 "status": "running",
-                "job_id": r.get("planning_id"),
+                "job_id": planning_id,
                 "internal_engine": engine,
                 "mode": mode,
                 "message": "Use check(job_id) to monitor",
@@ -2266,20 +2272,24 @@ def horcrux_run():
         except Exception as e:
             return jsonify({"error": str(e)}), 500
 
-    # ── 비동기 엔진: pair_generation ──
+    # ── 비동기 엔진: pair_generation (직접 호출) ──
     if engine == "pair_generation":
         try:
             pair_mode = data.get("pair_mode", "pair2")
-            import requests as _req
-            resp = _req.post(f"http://localhost:5000/api/pair", json={
-                "task": task,
-                "mode": pair_mode,
-                "output_dir": data.get("output_dir", ""),
-            }, timeout=10)
-            r = resp.json()
+            pair_id = "pair_" + datetime.now().strftime("%Y%m%d_%H%M%S_%f")[:23]
+            output_dir = data.get("output_dir", "")
+            pairs[pair_id] = {
+                "id": pair_id, "task": task, "mode": pair_mode,
+                "status": "running", "phase": "splitting", "messages": [],
+                "results": {}, "spec": "", "error": None,
+                "output_dir": output_dir,
+                "created_at": datetime.now().isoformat(), "finished_at": None,
+            }
+            t = threading.Thread(target=run_pair, args=(pair_id, task, pair_mode, "", None), daemon=True)
+            t.start()
             return jsonify({
                 "status": "running",
-                "job_id": r.get("pair_id"),
+                "job_id": pair_id,
                 "internal_engine": engine,
                 "mode": "parallel",
                 "message": "Use check(job_id) to monitor",
@@ -2288,18 +2298,22 @@ def horcrux_run():
         except Exception as e:
             return jsonify({"error": str(e)}), 500
 
-    # ── 비동기 엔진: self_improve ──
+    # ── 비동기 엔진: self_improve (직접 호출) ──
     if engine == "self_improve":
         try:
-            import requests as _req
-            resp = _req.post(f"http://localhost:5000/api/self_improve", json={
-                "task": task,
-                "iterations": data.get("iterations", 3),
-            }, timeout=10)
-            r = resp.json()
+            si_id = "si_" + datetime.now().strftime("%Y%m%d_%H%M%S")
+            iterations = data.get("iterations", 3)
+            self_improves[si_id] = {
+                "id": si_id, "task": task, "status": "running",
+                "iteration": 0, "total_iterations": iterations,
+                "final_score": 0, "final_solution": "",
+                "created_at": datetime.now().isoformat(), "finished_at": None,
+            }
+            t = threading.Thread(target=run_self_improve, args=(si_id, task, iterations), daemon=True)
+            t.start()
             return jsonify({
                 "status": "running",
-                "job_id": r.get("self_improve_id"),
+                "job_id": si_id,
                 "internal_engine": engine,
                 "mode": mode,
                 "message": "Use check(job_id) to monitor",
@@ -2308,21 +2322,28 @@ def horcrux_run():
         except Exception as e:
             return jsonify({"error": str(e)}), 500
 
-    # ── 비동기 엔진: debate_loop ──
+    # ── 비동기 엔진: debate_loop (직접 호출) ──
     if engine == "debate_loop":
         try:
-            import requests as _req
-            resp = _req.post(f"http://localhost:5000/api/start", json={
-                "task": task,
-                "max_rounds": data.get("max_rounds", 5),
-                "threshold": data.get("threshold", 8.0),
-                "project_dir": data.get("project_dir", ""),
-                "claude_model": data.get("claude_model", ""),
-            }, timeout=10)
-            r = resp.json()
+            debate_id = datetime.now().strftime("%Y%m%d_%H%M%S")
+            claude_model_resolved = {"opus": "claude-opus-4-6", "sonnet": "claude-sonnet-4-6"}.get(data.get("claude_model", ""), "")
+            max_rounds = data.get("max_rounds", 5)
+            threshold = data.get("threshold", 8.0)
+            project_dir = data.get("project_dir", "")
+            debates[debate_id] = {
+                "id": debate_id, "task": task, "status": "running",
+                "round": 0, "phase": "starting", "messages": [],
+                "avg_score": 0, "final_solution": "",
+                "threshold": threshold, "max_rounds": max_rounds,
+                "claude_model": claude_model_resolved,
+                "project_dir": project_dir,
+                "created_at": datetime.now().isoformat(), "finished_at": None,
+            }
+            t = threading.Thread(target=run_debate, args=(debate_id, task, threshold, max_rounds, "", claude_model_resolved), daemon=True)
+            t.start()
             return jsonify({
                 "status": "running",
-                "job_id": r.get("debate_id"),
+                "job_id": debate_id,
                 "internal_engine": engine,
                 "mode": mode,
                 "message": "Use check(job_id) to monitor",
