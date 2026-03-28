@@ -449,9 +449,11 @@ def classify_task_complexity(
             }
             engine = _mode_to_engine.get(mode, InternalEngine.ADAPTIVE_STANDARD)
 
-            # 단, brainstorm/artifact intent는 planning이 더 적합하므로 예외 허용
+            # brainstorm/artifact intent는 standard/full일 때만 planning으로 라우팅
+            # fast를 명시했으면 fast 존중
             if detected_intent in (DetectedIntent.BRAINSTORM, DetectedIntent.ARTIFACT, DetectedIntent.DOCUMENT):
-                engine = InternalEngine.PLANNING_PIPELINE
+                if mode not in (HorcruxMode.FAST,):
+                    engine = InternalEngine.PLANNING_PIPELINE
 
             return ClassificationResult(
                 recommended_mode=mode,
