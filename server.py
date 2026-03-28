@@ -1634,7 +1634,7 @@ def list_threads():
             }
         except: pass
     from planning_v2 import plannings as plan_v2_states
-    for tid, d in {**debates, **pairs, **pipelines, **self_improves, **plan_v2_states, **horcrux_states}.items():
+    for tid, d in {**debates, **pairs, **pipelines, **self_improves, **plan_v2_states, **horcrux_states, **deep_refactors}.items():
         threads[tid] = {
             "id": tid, "task": d.get("task", "")[:80],
             "status": d.get("status", "unknown"),
@@ -2303,14 +2303,28 @@ def horcrux_run():
             )
             # BUG-2 fix: 동기 응답에도 job_id 생성 → check()로 조회 가능
             sync_id = "hrx_" + datetime.now().strftime("%Y%m%d_%H%M%S")
+            solution_text = result.get("final_solution", "")
             horcrux_states[sync_id] = {
                 "id": sync_id, "task": task, "status": "completed",
-                "phase": "completed", "messages": [],
+                "phase": "completed",
+                "round": result.get("rounds", 1),
+                "messages": [
+                    {"role": "generator", "content": solution_text,
+                     "model": f"Claude ({engine})", "score": result.get("final_score", 0),
+                     "ts": datetime.now().isoformat()},
+                ] if solution_text else [],
                 "avg_score": result.get("final_score", 0),
-                "final_solution": result.get("final_solution", ""),
+                "final_solution": solution_text,
                 "created_at": datetime.now().isoformat(),
                 "finished_at": datetime.now().isoformat(),
             }
+            # 로그 파일로도 저장 (서버 재시작 후에도 스레드 유지)
+            try:
+                log_file = LOG_DIR / f"{sync_id}.json"
+                with open(log_file, "w", encoding="utf-8") as f:
+                    json.dump(horcrux_states[sync_id], f, ensure_ascii=False, indent=2)
+            except Exception:
+                pass
             return jsonify({
                 "status": "converged" if result.get("converged") else "completed",
                 "job_id": sync_id,
