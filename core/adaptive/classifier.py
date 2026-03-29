@@ -394,6 +394,7 @@ def classify_task_complexity(
     risk_level: str = "medium",
     artifact_type: str = "none",
     user_mode_override: Optional[str] = None,
+    claude_model: str = "",
 ) -> ClassificationResult:
     """
     작업을 분류하고 최적 모드/엔진/intent를 결정한다.
@@ -527,3 +528,50 @@ def classify_task_complexity(
         internal_engine=engine,
         detected_intent=detected_intent,
     )
+
+
+def apply_sonnet_compensation(
+    result: ClassificationResult,
+    claude_model: str,
+    task_description: str,
+    estimated_scope: str = "medium",
+    risk_level: str = "medium",
+) -> ClassificationResult:
+    """
+    Sonnet 모델 사용 시 실험 데이터 기반 보정.
+
+    실험 결과 (Opus vs Sonnet, standard 모드):
+      easy:   Opus 7.5 vs Sonnet 4.0 (차이 3.5)
+      medium: Opus 6.5 vs Sonnet 5.5 (차이 1.0)
+      hard:   Opus 5.5 vs Sonnet 5.0 (차이 0.5) ← 오케스트레이션이 보완
+
+    정책:
+      - Sonnet + hard task → full 모드 승격 (오케스트레이션 깊이로 보완)
+      - Sonnet + easy/medium → 경고 플래그 추가 (Opus 추천)
+    """
+    is_sonnet = claude_model.lower() in ("sonnet", "claude-sonnet-4-6")
+    if not is_sonnet:
+        return result
+
+    # 난이도 추정: intent + scope + risk 기반
+    is_hard = (
+        result.detected_intent in (DetectedIntent.REFACTOR, DetectedIntent.DEEP_REFACTOR)
+        or estimated_scope == "large"
+        or risk_level == "high"
+        or any(kw in task_description.lower() for kw in (
+            "architecture", "아키텍처", "security", "보안", "migration", "마이그레이션",
+            "msa", "microservice", "production", "프로덕션",
+        ))
+    )
+
+    if is_hard:
+        # Sonnet + hard → full 승격 (차이 0.5 → 오케스트레이션으로 보완 가능)
+        if result.internal_engine in (InternalEngine.ADAPTIVE_FAST, InternalEngine.ADAPTIVE_STANDARD):
+            result.internal_engine = InternalEngine.ADAPTIVE_FULL
+            result.recommended_mode = HorcruxMode.FULL
+            result.reason += " | sonnet_compensation: hard task → full mode upgrade"
+    else:
+        # Sonnet + easy/medium → 경고 (차이 1.0~3.5)
+        result.reason += " | sonnet_warning: Opus recommended for easy/medium tasks (+1.0~3.5 score)"
+
+    return result

@@ -2269,6 +2269,8 @@ def horcrux_run():
     mode_param = data.get("mode", "auto")
     mode_override = None if mode_param == "auto" else mode_param
 
+    claude_model_param = data.get("claude_model", "")
+
     classification = classify_task_complexity(
         task_description=task,
         task_type=data.get("task_type", "code"),
@@ -2277,6 +2279,17 @@ def horcrux_run():
         risk_level=data.get("risk", "medium"),
         artifact_type=data.get("artifact_type", "none"),
         user_mode_override=mode_override,
+        claude_model=claude_model_param,
+    )
+
+    # Sonnet 보정: hard → full 승격, easy/medium → Opus 추천 경고
+    from core.adaptive.classifier import apply_sonnet_compensation
+    classification = apply_sonnet_compensation(
+        result=classification,
+        claude_model=claude_model_param,
+        task_description=task,
+        estimated_scope=data.get("scope", "medium"),
+        risk_level=data.get("risk", "medium"),
     )
 
     engine = classification.internal_engine.value
@@ -2341,6 +2354,7 @@ def horcrux_run():
                     "source": classification.routing_source.value,
                     "confidence": classification.confidence,
                     "intent": intent,
+                    "reason": classification.reason,
                 },
             })
         except Exception as e:
