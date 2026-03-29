@@ -105,12 +105,12 @@ class CodexCLIBackend(ProviderBackend):
     def invoke(self, prompt: str, timeout: int = 300) -> ProviderResponse:
         t0 = time.monotonic()
         stdout, stderr, rc = run_cli_stdin(
-            ["codex", "-q", "-"], prompt, timeout
+            ["codex", "exec", "-"], prompt, timeout
         )
         if rc != 0 and not stdout.strip():
             if len(prompt) <= 8000:
                 stdout, stderr, rc = run_cli_stdin(
-                    ["codex", "-q", prompt], "", timeout
+                    ["codex", "exec", prompt], "", timeout
                 )
         ms = int((time.monotonic() - t0) * 1000)
         err = stderr if rc != 0 else None
