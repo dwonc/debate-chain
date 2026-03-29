@@ -1,75 +1,80 @@
-# Horcrux Model Experiment Report
+# Horcrux 모델 성능 실험 리포트
 
-## Opus 4.6 vs Sonnet 4.6 — Standard Mode
+## Opus 4.6 vs Sonnet 4.6 — Standard 모드 비교
 
-**Date**: 2026-03-29
-**Mode**: standard (pair gen + synth + core critic + revision, max 2 rounds)
-**Config**: core_weight=0.6, aux_weight=0.4
+**실험일**: 2026-03-29
+**모드**: standard (병렬 생성 + 종합 + 코어 크리틱 + 리비전, 최대 2라운드)
+**가중치 설정**: core_weight=0.6, aux_weight=0.4
 
-## Results
+## 실험 결과
 
-| Task | Category | Difficulty | Opus | Sonnet | Delta | Opus Time | Sonnet Time |
-|------|----------|-----------|------|--------|-------|-----------|-------------|
-| T06 | React refactor | easy | **7.5** | 4.0 | +3.5 | 263s | 205s |
-| T01 | Flask Service Layer | medium | **6.5** | 5.5 | +1.0 | 160s | 178s |
-| T05 | JWT security audit | hard | **5.5** | 5.0 | +0.5 | 153s | 96s |
-| **AVG** | | | **6.5** | **4.8** | **+1.7** | **192s** | **160s** |
+| 태스크 | 카테고리 | 난이도 | Opus | Sonnet | 차이 | Opus 소요 | Sonnet 소요 |
+|--------|----------|--------|------|--------|------|-----------|-------------|
+| T06 | React 컴포넌트 리팩토링 | easy | **7.5** | 4.0 | +3.5 | 263초 | 205초 |
+| T01 | Flask Service Layer 분리 | medium | **6.5** | 5.5 | +1.0 | 160초 | 178초 |
+| T05 | JWT 인증 보안 감사 | hard | **5.5** | 5.0 | +0.5 | 153초 | 96초 |
+| **평균** | | | **6.5** | **4.8** | **+1.7** | **192초** | **160초** |
 
-## Key Findings
+## 핵심 발견
 
-### 1. Opus is consistently better (+1.7 avg)
-All three difficulty levels showed Opus outperforming Sonnet. The gap is significant (>0.5 threshold).
+### 1. Opus가 전반적으로 우위 (평균 +1.7점)
+세 난이도 모두에서 Opus가 Sonnet을 앞섰다. 평균 1.7점 차이는 유의미한 수준(기준 0.5점 초과).
 
-### 2. Orchestration compensates more for hard tasks
-| Difficulty | Gap | Interpretation |
-|-----------|-----|----------------|
-| easy | 3.5 | Orchestration barely helps Sonnet on simple tasks |
-| medium | 1.0 | Moderate compensation from critic-revision loop |
-| hard | 0.5 | Strong compensation — 5 Critics + Revision nearly closes the gap |
+### 2. 난이도가 높을수록 오케스트레이션이 Sonnet 약점을 보완
+| 난이도 | 점수 차이 | 해석 |
+|--------|----------|------|
+| easy | 3.5 | 오케스트레이션으로도 Sonnet 보완이 거의 안 됨 |
+| medium | 1.0 | 크리틱-리비전 루프가 중간 수준의 보완 효과 |
+| hard | 0.5 | 5개 모델 크리틱 + 리비전이 격차를 거의 해소 |
 
-### 3. Cost-effectiveness
-| Model | Avg Score | Est. Cost/Run | Score per $ |
-|-------|-----------|---------------|-------------|
-| Opus | 6.5 | ~$0.40 | 16.3 |
-| Sonnet | 4.8 | ~$0.04 | 120.0 |
+**핵심 인사이트**: 어려운 태스크에서는 코어 모델 성능보다 **멀티모델 검증 깊이**가 결과 품질에 더 큰 영향을 미친다.
 
-Sonnet is 7x more cost-effective per point, but the absolute quality gap matters for critical tasks.
+### 3. 비용 효율성
+| 모델 | 평균 점수 | 예상 비용/회 | 점수 대비 비용 |
+|------|----------|-------------|--------------|
+| Opus | 6.5 | ~$0.40 | $0.062/점 |
+| Sonnet | 4.8 | ~$0.04 | $0.008/점 |
 
-### 4. Latency
-Sonnet is ~17% faster on average (160s vs 192s), as expected from smaller model inference.
+Sonnet은 점당 비용이 Opus 대비 약 7배 효율적이지만, 절대적 품질 차이는 critical한 태스크에서 중요할 수 있음.
 
-## Hypothesis Evaluation
+### 4. 응답 속도
+Sonnet이 평균 약 17% 빠름 (160초 vs 192초). 모델 추론 속도 차이에 기인.
 
-| Hypothesis | Result |
-|-----------|--------|
-| H1: Orchestration offsets model quality gap | **Partially true** — only for hard tasks (gap 0.5), not for easy (gap 3.5) |
-| H2: Sonnet + free Aux is cost-effective vs Opus alone | **True for hard tasks** — 5.0 vs 5.5 at 1/10 cost is acceptable |
-| H3: Core model affects internal behavior patterns | **Not enough data** — both converged in 2 rounds, need full mode experiment |
+## 가설 검증
 
-## Actions Taken
+| 가설 | 결과 |
+|------|------|
+| H1: 오케스트레이션이 모델 품질 차이를 상쇄한다 | **부분적 참** — hard에서만 상쇄(차이 0.5), easy에서는 오히려 확대(차이 3.5) |
+| H2: Sonnet + 무료 Aux 조합이 비용 대비 우수하다 | **hard 태스크에서 참** — 5.0 vs 5.5로 비용 1/10에 근접한 품질 |
+| H3: 코어 모델에 따라 내부 동작 패턴이 달라진다 | **데이터 부족** — 둘 다 2라운드 수렴, full 모드 실험 필요 |
 
-Based on these results, `apply_sonnet_compensation()` was added to the classifier:
+## 실험 기반 조치 (코드 반영 완료)
 
-1. **Sonnet + hard task** (refactor/security/architecture/MSA/production)
-   - Auto-upgrade from standard/fast to **full mode**
-   - Deeper orchestration (more Critics + Revision rounds) compensates for model gap
+이 결과를 기반으로 `apply_sonnet_compensation()` 함수를 classifier에 추가:
 
-2. **Sonnet + easy/medium task**
-   - Warning in routing reason: "Opus recommended for easy/medium tasks (+1.0~3.5 score)"
-   - No mode change (user's choice respected)
+### Sonnet + hard 태스크 (리팩토링/보안/아키텍처/MSA/프로덕션)
+- standard/fast에서 **full 모드로 자동 승격**
+- 더 깊은 오케스트레이션(5 Critics + 추가 리비전)으로 모델 격차 보완
+- 근거: hard 태스크에서 차이 0.5 → full 모드면 격차 추가 축소 기대
 
-3. **Opus** — no changes applied
+### Sonnet + easy/medium 태스크
+- 라우팅 사유에 **"Opus 추천" 경고** 포함
+- 모드 변경 없음 (사용자 선택 존중)
+- 근거: 차이 1.0~3.5로 오케스트레이션만으로 보완 어려움
 
-## Limitations
+### Opus 사용자
+- 변경 없음
 
-- Sample size: 3 tasks x 2 models = 6 runs (directional, not statistically significant)
-- Standard mode only (full mode may show different patterns)
-- No token cost measurement (estimated from public pricing)
-- Single execution per combination (no variance measurement)
+## 한계
 
-## Future Experiments
+- 표본 크기: 3개 태스크 x 2개 모델 = 6회 (방향성은 유의미하나 통계적 유의성은 부족)
+- standard 모드만 실험 (full 모드에서는 다른 패턴 가능)
+- 토큰 비용 미측정 (공개 가격 기준 추정)
+- 조합당 1회 실행 (분산 측정 불가)
 
-- Full mode comparison (does deeper orchestration further close the gap?)
-- Sonnet with full mode vs Opus with standard mode (is compensated Sonnet competitive?)
-- Token consumption tracking per run
-- 10+ tasks for statistical significance
+## 추후 실험 과제
+
+- full 모드 비교 (더 깊은 오케스트레이션이 격차를 추가로 줄이는가?)
+- Sonnet + full vs Opus + standard 비교 (보정된 Sonnet이 경쟁력 있는가?)
+- 실행당 토큰 소비량 추적
+- 10개 이상 태스크로 통계적 유의성 확보
