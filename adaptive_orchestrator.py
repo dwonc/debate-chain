@@ -480,7 +480,7 @@ def _run_standard(
             critical_issue_count=len(memory.working.blocking_issues),
             risk_level=config.get("adaptive", {}).get("risk", "medium"),
         )
-        if aux_decision.should_run:
+        if aux_decision.run_aux:
             print(f"    [3b] Aux Critics (reason: {aux_decision.reason})...")
             try:
                 aux_providers = make_auxiliary()
