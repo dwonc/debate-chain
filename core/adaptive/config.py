@@ -20,12 +20,12 @@ _CONFIG_DIR = Path(__file__).parent.parent.parent  # horcrux root
 @dataclass
 class TimeoutConfig:
     """Stage별 timeout (ms). 환경변수 > config file > default 순으로 resolve."""
-    generator_ms:     int = 30_000
-    synth_ms:         int = 25_000
-    core_critic_ms:   int = 25_000
-    aux_critic_ms:    int = 15_000
-    revision_ms:      int = 25_000
-    light_critic_ms:  int = 12_000  # fast 모드용 축약 critic
+    generator_ms:     int = 120_000  # 2분 (Opus 한국어 응답 고려)
+    synth_ms:         int = 60_000   # 1분
+    core_critic_ms:   int = 60_000   # 1분
+    aux_critic_ms:    int = 30_000   # 30초
+    revision_ms:      int = 60_000   # 1분
+    light_critic_ms:  int = 30_000   # 30초 (fast 모드용)
 
     @classmethod
     def from_env(cls) -> "TimeoutConfig":
