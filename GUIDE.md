@@ -26,33 +26,41 @@
 └───────────────────────────────────────────────────────────┘
 ```
 
+### 실험 기반 최적화 (v8.3)
+
+24회 실행 실험 결과, **오케스트레이션 깊이가 모델 성능보다 중요**하다는 것이 검증됨:
+- Sonnet+full(7.5) > Opus+standard(6.5) — 저렴한 모델 + 깊은 검증이 우위
+- Full 모드에서 Opus/Sonnet 동점 (7.7 vs 7.5)
+- **기본 모델: Sonnet** (비용 1/10, 품질 동등)
+- **기본 라우팅: Full** (standard 대비 +2.0점)
+
 ### 외부 모드 (사용자 선택)
-| 모드 | 설명 | 색상 |
-|------|------|------|
-| **Auto** | task 분석 → 최적 경로 자동 선택 (기본) | 보라-파랑 |
-| **Fast** | 간단한 수정, 저위험 | 초록 |
-| **Standard** | 중간 복잡도, pair gen + critic | 노랑 |
-| **Full** | 고난도, 풀체인 + aux critic | 빨강 |
-| **Parallel** | 비판 없이 2~3 AI 병렬 생성 | 파랑 |
-| **Deep Refactor** | 멀티모델 코드 분석 + 자동 모듈 분할 | — |
+| 모드 | 설명 | Auto 라우팅 |
+|------|------|------------|
+| **Auto** | 실험 데이터 기반 최적 경로 자동 선택 (기본) | Fast 또는 Full |
+| **Fast** | 간단한 수정, 저위험 전용 | code_fix + small + low_risk만 |
+| **Standard** | 중간 복잡도 (레거시, Auto에서 미사용) | 사용자 명시 시만 |
+| **Full** | 풀체인 + aux critic (**Auto 기본**) | 대부분의 태스크 |
+| **Parallel** | 비판 없이 2~3 AI 병렬 생성 | 사용자 명시 시 |
+| **Deep Refactor** | 멀티모델 코드 분석 + 자동 모듈 분할 | 사용자 명시 시 |
 
 ### 내부 엔진 (자동 결정)
-| 엔진 | 용도 |
-|------|------|
-| `adaptive_fast` | 1-pass 생성 + light critic |
-| `adaptive_standard` | pair gen + synth + core critic + revision(×2) |
-| `adaptive_full` | full debate loop + aux critics + convergence |
-| `debate_loop` | 멀티 라운드 debate (legacy) |
-| `planning_pipeline` | 3 AI gen → synth → critic → polish (brainstorm/artifact) |
-| `pair_generation` | 2~3 AI 병렬 코드 생성 |
-| `self_improve` | 반복 개선 루프 |
-| `deep_refactor` | 모듈별 3모델 분석 → 종합 → 5모델 크리틱 루프 |
+| 엔진 | 용도 | Auto 라우팅 |
+|------|------|------------|
+| `adaptive_fast` | 1-pass 생성 + light critic | 간단한 수정만 |
+| `adaptive_standard` | pair gen + synth + core critic + revision | 레거시 (명시 시만) |
+| `adaptive_full` | full debate loop + aux critics + convergence | **기본** |
+| `planning_pipeline` | 3 AI gen -> synth -> critic -> polish | brainstorm/artifact |
+| `pair_generation` | 2~3 AI 병렬 코드 생성 | parallel 명시 시 |
+| `self_improve` | 반복 개선 루프 | improve 키워드 |
+| `deep_refactor` | 모듈별 3모델 분석 -> 종합 -> 5모델 크리틱 | deep_refactor 명시 시 |
 
-### Intent 자동 감지
-| Intent | 키워드 예시 | → 엔진 |
+### Intent 자동 감지 (v8.3 최적화 반영)
+| Intent | 키워드 예시 | -> 엔진 |
 |--------|------------|--------|
-| code_fix | fix, bug, typo, 수정, 오류 | adaptive_fast |
-| feature_add | (기본) | adaptive_standard |
+| code_fix (간단) | fix, typo, 수정 + small + low_risk | adaptive_fast |
+| code_fix (복잡) | fix, bug + medium/large scope | **adaptive_full** |
+| feature_add | (기본) | **adaptive_full** |
 | refactor | refactor, architecture, 리팩토링 | adaptive_full |
 | brainstorm | brainstorm, 아이디어, 전략, 기획 | planning_pipeline |
 | artifact | ppt, pdf, 보고서, 포트폴리오 | planning_pipeline |
@@ -77,18 +85,19 @@
 
 ## 구독별 설치
 
-### 풀스펙 — Claude Max + GPT Pro ($400/월)
-Opus 4.6 ↔ Codex 5.4 직접 debate. 최고 품질.
-```bash
-claude auth login    # Max 계정
-codex auth login     # Pro 계정
-```
-
-### 균형 — Claude Pro + GPT Plus ($40/월)
-Sonnet 4.6 ↔ GPT-4o debate.
+### 추천 — Claude Pro + ChatGPT Plus ($40/월)
+**실험 검증: Sonnet+full(7.5) = Opus+full(7.7). 비용 1/10에 동등 품질.**
 ```bash
 claude auth login    # Pro 계정
 codex auth login     # Plus 계정
+```
+
+### 최고 — Claude Max + ChatGPT Plus ($120/월)
+Opus 4.6으로 전환 가능. hard 태스크에서 +0.7점 우위.
+```bash
+claude auth login    # Max 계정
+codex auth login     # Plus 계정
+# 사용 시: claude_model=opus 파라미터 추가
 ```
 
 ### 최저 — Claude Pro only ($20/월)

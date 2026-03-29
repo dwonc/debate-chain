@@ -1,5 +1,48 @@
 # Horcrux Changelog
 
+## v8.3.0 — 2026-03-29
+
+### 실험 기반 최적화 — 비용 90% 절감, 품질 동등
+
+24회 실행 실험(Opus vs Sonnet x standard/full x 3난이도)으로 최적 조합 도출.
+
+#### 핵심 실험 결과
+| 조합 | 평균 점수 | 비용/회 |
+|------|----------|--------|
+| Opus+standard | 6.5 | ~$0.40 |
+| Opus+full | 7.7 | ~$0.80 |
+| Sonnet+standard | 4.8 | ~$0.04 |
+| **Sonnet+full** | **7.5** | **~$0.08** |
+
+- Sonnet+full(7.5) = Opus+full(7.7) at 1/10 cost
+- Sonnet+full(7.5) > Opus+standard(6.5) — 오케스트레이션 > 모델 성능
+- Medium에서 Sonnet+full(8.5)이 Opus+full(7.5) 역전
+
+#### 코드 반영
+- **기본 모델 변경**: Opus -> **Sonnet** (`call_claude` default)
+- **기본 라우팅 변경**: auto 모드에서 standard -> **full** (`_route_intent_to_engine`)
+  - fast: `code_fix + small + low_risk`만
+  - 나머지 전부: full
+- **Sonnet 보정**: `apply_sonnet_compensation()` — hard task 시 full 자동 승격
+- **`.horcrux/optimization.md`**: 실험 데이터 기반 라우팅 정책 문서
+
+#### 버그 수정 (이번 세션)
+- `AuxDecision.should_run` -> `run_aux` 필드명 오타 수정
+- Codex CLI `-q` 플래그 제거 (CLI 업데이트 대응) -> `exec` 서브커맨드
+- Windows cp949 인코딩 크래시 -> `chcp 65001` + `PYTHONIOENCODING=utf-8`
+- generator timeout 30초 -> 120초 (한국어/복잡 태스크 대응)
+- mode override 시 intent가 모드를 덮어쓰던 문제 수정
+- 404 폴링 무한 반복 -> 비정상 응답 시 폴링 중단
+- 빈/깨진 로그 파일 JSON 파싱 에러 -> graceful 404 반환
+- 동기 `hrx_` 스레드 로그 파일 미저장 -> 서버 재시작 후에도 유지
+
+#### 실험 인프라
+- `run_experiment_mini.py`: 간편 실험 (3태스크 x 2모델)
+- `run_experiment_phase2.py`: full 모드 + 크로스 비교
+- `experiment_results/`: 전체 실험 데이터 + 한글 리포트
+
+---
+
 ## v8.2.0 — 2026-03-28
 
 ### Deep Refactor 모드 — 멀티모델 코드 리팩토링 분석 엔진
