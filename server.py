@@ -2160,7 +2160,7 @@ function resultUrl(id){if(id.startsWith('plan_'))return`/api/planning/result/${i
 async function selectThread(id){if(pt)clearInterval(pt);cid=id;lmc=0;$('messages').innerHTML='';$('resultArea').innerHTML='';$('emptyState').style.display='none';
   const isP=id.startsWith('plan_');const isPair=id.startsWith('pair_');const isHrx=id.startsWith('hrx_')||id.startsWith('adp_');setMode(isP||isHrx?'auto':isPair?'parallel':'auto');
   const sr=await fetch(statusUrl(id));const s=await sr.json();
-  if(s.error==='not found')return;
+  if(!sr.ok||s.error==='not found'){loadThreads();return}
   if(s.status==='running'){
     $('taskInput').value=s.task||'';
     run=true;$('btnRun').disabled=true;$('btnStop').style.display='inline-block';$('progressArea').style.display='block';
@@ -2186,7 +2186,7 @@ async function startRun(){const task=$('taskInput').value.trim();if(!task||run)r
   if(d.solution){run=false;$('btnRun').disabled=false;$('btnStop').style.display='none';$('progressArea').style.display='none';$('messages').innerHTML=`<div class="msg msg-generator"><div class="msg-header"><span class="role-tag role-generator">Solution</span><span style="font-size:10px;color:#555">(${d.mode} / ${d.internal_engine})</span></div><pre>${esc(d.solution)}</pre></div>`;$('resultArea').innerHTML=`<div class="result result-ok"><div class="result-header"><span class="result-icon">✅</span><div><div class="result-title" style="color:#69db7c">${d.status}</div><div class="result-sub">${d.mode} · ${d.internal_engine} · score: ${d.score||0}/10</div></div><button class="btn-copy" onclick="navigator.clipboard.writeText(document.querySelector('.msg pre').textContent)">Copy</button></div></div>`;loadThreads();return}
   cid=d.job_id;loadThreads();pt=setInterval(poll,2000)}
 async function poll(){if(!cid)return;
-  const r=await fetch(statusUrl(cid));const s=await r.json();
+  const r=await fetch(statusUrl(cid));if(!r.ok){clearInterval(pt);run=false;$('btnRun').disabled=false;$('btnStop').style.display='none';$('progressArea').style.display='none';return}const s=await r.json();
   const isP=(cid||'').startsWith('plan_');const isPair=(cid||'').startsWith('pair_');
   if(isPair){const numParts=s.mode==='pair3'?3:2;const done=s.parts_done||0;$('progressLabel').textContent=`${s.phase||'parallel_gen'} — ${done}/${numParts} parts done`;$('progressFill').style.width=Math.min((done/numParts)*100,100)+'%';$('progressScore').textContent=s.mode==='pair3'?'3-AI Parallel':'2-AI Parallel';$('progressScore').style.color='#69db7c'}else if(isP){const phaseIdx={starting:0,generating:1,synthesizing:2,critiquing:3,polishing:4,completed:4};const pi=phaseIdx[s.phase]||0;$('progressLabel').textContent=`Phase ${pi}/4 — ${s.phase_detail||s.phase||'...'}`;$('progressFill').style.width=Math.min((pi/4)*100,100)+'%';if(s.avg_score>0){$('progressScore').textContent=`Avg Critic: ${s.avg_score.toFixed(1)}/10`;$('progressScore').style.color=s.avg_score>=THRESHOLD?'#69db7c':'#ff6b6b'}}else{$('progressLabel').textContent=`Round ${s.round||0}/${MAX_ROUNDS} - ${s.phase||'...'}`;
   $('progressFill').style.width=Math.min(((s.round||0)/MAX_ROUNDS)*100,100)+"%";
