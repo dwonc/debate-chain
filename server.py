@@ -8,11 +8,18 @@ import json
 import subprocess
 import os
 import re
+import sys
 import time
 import threading
 import concurrent.futures
 from datetime import datetime
 from pathlib import Path
+
+# Windows cp949 콘솔에서 유니코드 출력 크래시 방지
+if sys.platform == "win32":
+    import io
+    sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding="utf-8", errors="replace")
+    sys.stderr = io.TextIOWrapper(sys.stderr.buffer, encoding="utf-8", errors="replace")
 
 # .env 자동 로딩 (start.bat 없이 직접 실행해도 API 키 사용 가능)
 _env_file = Path(__file__).parent / ".env"
