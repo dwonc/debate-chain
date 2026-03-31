@@ -942,8 +942,8 @@ def _call_aux_critic(name, base_url, env_key, model, extra_headers, prompt, time
         return name, ""
 
 
-def run_multi_critic(task, solution, previously_fixed_text):
-    """Phase 2+: Codex + Gemini + Aux(Groq/Together/OpenRouter) 병렬 Critic"""
+def run_multi_critic(task, solution, previously_fixed_text, vision_url="", vision_mode="full_horcrux"):
+    """Phase 2+: Codex + Gemini + Aux(Groq/Together/OpenRouter) + Vision 병렬 Critic"""
     prompt = CRITIC_PROMPT.format(
         task=task, solution=solution,
         previously_fixed=previously_fixed_text or "None (first round)"
@@ -954,7 +954,10 @@ def run_multi_critic(task, solution, previously_fixed_text):
         ep for ep in AUX_CRITIC_ENDPOINTS
         if os.environ.get(ep[2])
     ]
-    total_workers = 2 + len(available_aux)  # Codex + Gemini + Aux N개
+    # Vision critic 활성화 판정: full 모드 + vision_url 존재 시
+    run_vision = bool(vision_url and vision_mode == "full_horcrux")
+
+    total_workers = 2 + len(available_aux) + (1 if run_vision else 0)
 
     with concurrent.futures.ThreadPoolExecutor(max_workers=max(total_workers, 2)) as pool:
         # Core critics
@@ -967,9 +970,16 @@ def run_multi_critic(task, solution, previously_fixed_text):
             f = pool.submit(_call_aux_critic, name, base, env_key, model, extra_h, prompt)
             aux_futures.append(f)
 
+        # Vision UI critic (병렬, full 모드 전용)
+        f_vision = None
+        if run_vision:
+            from core.vision.critic import run_vision_critic
+            f_vision = pool.submit(run_vision_critic, vision_url, "desktop", "light")
+
         codex_raw = f_codex.result()
         gemini_raw = f_gemini.result()
         aux_results = [f.result() for f in aux_futures]  # [(name, raw_text), ...]
+        vision_result = f_vision.result() if f_vision else None
 
     codex_data = extract_json(codex_raw) or {}
     gemini_data = extract_json(gemini_raw) or {}
@@ -1048,6 +1058,31 @@ def run_multi_critic(task, solution, previously_fixed_text):
     critic_scores = {"Codex": codex_score, "Gemini": gemini_score}
     critic_scores.update(aux_scores)
 
+    # ── Vision UI Critic 결과 합류 ──
+    vision_data = {}
+    if vision_result and vision_result.get("ok"):
+        vision_score = vision_result.get("score", 0.0)
+        critic_scores["Vision"] = vision_score
+        # vision issues → all_issues에 추가
+        for vi in vision_result.get("issues", []):
+            desc = vi.get("description", "")
+            key = desc[:40]
+            if key and key not in seen:
+                seen.add(key)
+                all_issues.append({
+                    "sev": vi.get("severity", "minor"),
+                    "desc": desc,
+                    "source": "Vision",
+                    "category": vi.get("category", "ui"),
+                    "fix": vi.get("location", ""),
+                })
+        vision_data = {
+            "score": vision_score,
+            "summary": vision_result.get("summary", ""),
+            "suggestions": vision_result.get("suggestions", []),
+            "model_used": vision_result.get("model_used", ""),
+        }
+
     return {
         "overall": round(overall, 1),
         "scores": merged_dims,
@@ -1058,10 +1093,11 @@ def run_multi_critic(task, solution, previously_fixed_text):
         "critic_scores": critic_scores,
         "aux_count": len(aux_scores),
         "normalized_critics": {n["model"]: n for n in all_norms},  # v5.2+: 정규화된 critic 데이터 전체
+        "vision": vision_data,  # VIS-004: vision critic 결과
     }
 
 
-def run_debate(debate_id, task, threshold, max_rounds, initial_solution="", claude_model=""):
+def run_debate(debate_id, task, threshold, max_rounds, initial_solution="", claude_model="", vision_url=""):
     state = debates[debate_id]
     solution = initial_solution
     all_round_issues = []   # 라운드별 이슈 누적 (regression detection용)
@@ -1134,7 +1170,7 @@ def run_debate(debate_id, task, threshold, max_rounds, initial_solution="", clau
 
             # ── Phase 2: Multi-Critic (Codex + Gemini 병렬) ──
             state["phase"] = "critic"
-            critic_merged = run_multi_critic(task, solution, prev_text)
+            critic_merged = run_multi_critic(task, solution, prev_text, vision_url=vision_url, vision_mode="full_horcrux")
             if state.get("abort"): break
 
             c_score = critic_merged["overall"]
@@ -1163,6 +1199,14 @@ def run_debate(debate_id, task, threshold, max_rounds, initial_solution="", clau
                 disp += f"\n⚠ Regressions: {critic_merged['regressions']}\n"
             if critic_merged["strengths"]:
                 disp += "\nStrengths: " + " | ".join(critic_merged["strengths"][:3])
+            # Vision critic 요약 표시
+            if critic_merged.get("vision") and critic_merged["vision"].get("score"):
+                vd = critic_merged["vision"]
+                disp += f"\n\nVision UI: {vd['score']:.1f}/10 ({vd.get('model_used', '?')})"
+                if vd.get("summary"):
+                    disp += f" — {vd['summary']}"
+                for sug in vd.get("suggestions", [])[:3]:
+                    disp += f"\n  > {sug}"
 
             state["messages"].append({"role": "critic", "content": disp, "score": c_score, "ts": datetime.now().isoformat()})
             state.setdefault("raw_steps", []).append({"role": "critic", "data": critic_merged})
@@ -1604,7 +1648,7 @@ def start_debate():
     debates[debate_id]["claude_model"] = claude_model
 
     t = threading.Thread(target=run_debate,
-                         args=(debate_id, task, threshold, max_rounds, initial_solution, claude_model),
+                         args=(debate_id, task, threshold, max_rounds, initial_solution, claude_model, data.get("vision_url", "")),
                          daemon=True)
     t.start()
     return jsonify({"debate_id": debate_id, "project_dir": project_dir, "claude_model": claude_model or "default"})
@@ -1747,6 +1791,102 @@ def delete_thread(debate_id):
     log_file = LOG_DIR / f"{debate_id}.json"
     if log_file.exists(): log_file.unlink()
     return jsonify({"ok": True})
+
+
+# ── Vision UI Critic API ──
+
+@app.route("/api/vision/analyze", methods=["POST"])
+def vision_analyze():
+    """
+    이미지 파일 업로드 또는 URL → Vision UI Critic 분석.
+
+    사용법 1 — 이미지 업로드:
+      curl -X POST localhost:5000/api/vision/analyze -F "image=@screenshot.png"
+
+    사용법 2 — URL 캡처 후 분석:
+      curl -X POST localhost:5000/api/vision/analyze -H "Content-Type: application/json" \
+           -d '{"url": "http://localhost:3000", "viewport": "desktop"}'
+
+    사용법 3 — base64 직접 전달:
+      curl -X POST localhost:5000/api/vision/analyze -H "Content-Type: application/json" \
+           -d '{"image_base64": "iVBOR...", "viewport": "mobile"}'
+    """
+    from core.vision.critic import vision_ui_critic, run_vision_critic, analyze_image_file
+    import base64 as _b64
+
+    viewport = "desktop"
+    rules_path = None
+
+    # ── 방법 1: multipart 이미지 업로드 ──
+    if "image" in request.files:
+        f = request.files["image"]
+        viewport = request.form.get("viewport", "desktop")
+        rules_path = request.form.get("rules_path") or None
+        img_bytes = f.read()
+        img_b64 = _b64.b64encode(img_bytes).decode("ascii")
+        result = vision_ui_critic(image_base64=img_b64, viewport=viewport, rules_path=rules_path)
+        result["source"] = "upload"
+        result["filename"] = f.filename
+        return jsonify(result)
+
+    # ── 방법 2/3: JSON body ──
+    data = request.json or {}
+    viewport = data.get("viewport", "desktop")
+    rules_path = data.get("rules_path") or None
+    color_scheme = data.get("color_scheme", "light")
+
+    # base64 직접 전달
+    if data.get("image_base64"):
+        result = vision_ui_critic(image_base64=data["image_base64"], viewport=viewport, rules_path=rules_path)
+        result["source"] = "base64"
+        return jsonify(result)
+
+    # URL 캡처 후 분석
+    if data.get("url"):
+        result = run_vision_critic(
+            url=data["url"], viewport=viewport,
+            color_scheme=color_scheme, rules_path=rules_path,
+        )
+        result["source"] = "url_capture"
+        return jsonify(result)
+
+    return jsonify({"error": "image file, image_base64, or url required"}), 400
+
+
+@app.route("/api/vision/analyze/responsive", methods=["POST"])
+def vision_analyze_responsive():
+    """
+    URL → 3종 뷰포트(desktop/tablet/mobile) 일괄 캡처 + 분석.
+
+    curl -X POST localhost:5000/api/vision/analyze/responsive \
+         -H "Content-Type: application/json" \
+         -d '{"url": "http://localhost:3000"}'
+    """
+    from core.vision.capture import capture_responsive
+    from core.vision.critic import vision_ui_critic
+
+    data = request.json or {}
+    url = data.get("url", "")
+    if not url:
+        return jsonify({"error": "url required"}), 400
+
+    color_scheme = data.get("color_scheme", "light")
+    rules_path = data.get("rules_path") or None
+
+    captures = capture_responsive(url=url, color_scheme=color_scheme, healthcheck=True)
+
+    results = {}
+    for vp_name, cap in captures.items():
+        if not cap["ok"]:
+            results[vp_name] = {"ok": False, "error": cap["error"]}
+            continue
+        critique = vision_ui_critic(
+            image_base64=cap["png_base64"], viewport=vp_name, rules_path=rules_path,
+        )
+        critique["viewport"] = vp_name
+        results[vp_name] = critique
+
+    return jsonify({"url": url, "color_scheme": color_scheme, "results": results})
 
 
 @app.route("/api/test")
@@ -2531,7 +2671,8 @@ def horcrux_run():
                 "project_dir": project_dir,
                 "created_at": datetime.now().isoformat(), "finished_at": None,
             }
-            t = threading.Thread(target=run_debate, args=(debate_id, task, threshold, max_rounds, "", claude_model_resolved), daemon=True)
+            vision_url_param = data.get("vision_url", "")
+            t = threading.Thread(target=run_debate, args=(debate_id, task, threshold, max_rounds, "", claude_model_resolved, vision_url_param), daemon=True)
             t.start()
             return jsonify({
                 "status": "running",
