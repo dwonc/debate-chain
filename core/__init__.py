@@ -14,7 +14,7 @@ from .provider     import (
 from .async_worker import AsyncWorkerPool, get_pool
 from .sse          import SSEBus, SSESubscription, get_bus, make_sse_response
 from .cost_tracker import CostTracker, RateLimiter, get_tracker, get_limiter
-from .convergence  import ConvergenceAnalyzer, ConvergenceResult, ConvergenceThresholds
+# convergence — removed (R34: dead code)
 from .types        import TaskType, RouteResult, ProviderStats, ToolResult
 from .router       import ProviderRouter, detect_task_type
 from .tools        import web_search, code_exec, file_read, inject_tools
@@ -45,8 +45,6 @@ __all__ = [
     "SSEBus", "SSESubscription", "get_bus", "make_sse_response",
     # cost
     "CostTracker", "RateLimiter", "get_tracker", "get_limiter",
-    # convergence
-    "ConvergenceAnalyzer", "ConvergenceResult", "ConvergenceThresholds",
     # types
     "TaskType", "RouteResult", "ProviderStats", "ToolResult",
     # router
