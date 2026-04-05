@@ -9,7 +9,7 @@ adaptive_orchestrator.py — Adaptive Horcrux Orchestrator
   3. mode별 실행 경로 분기:
      - fast: single generator → light critic → optional revision → finalize
      - standard: pair gen → synth → core critic → revision(max 2) → finalize
-     - full_horcrux: 기존 run_debate() 활용 + revision hard cap
+     - full: 기존 run_debate() 활용 + revision hard cap
 
 호환성:
   - 기존 orchestrator.py는 그대로 유지 (backward compatible)
@@ -107,7 +107,7 @@ def run_adaptive(
     Adaptive Horcrux 메인 진입점.
 
     기존 run_debate()를 대체하는 새 인터페이스.
-    난이도에 따라 fast/standard/full_horcrux로 자동 분기.
+    난이도에 따라 fast/standard/full로 자동 분기.
     """
     if config is None:
         config = load_config()
@@ -168,7 +168,7 @@ def run_adaptive(
     elif mode == HorcruxMode.STANDARD:
         result = _run_standard(task, config, session_id, stage_plan, i_session=i_session)
     else:
-        result = _run_full_horcrux(task, config, session_id, stage_plan, i_session=i_session)
+        result = _run_full(task, config, session_id, stage_plan, i_session=i_session)
 
     # ─── Finalize ───
     total_ms = (time.time() - total_start) * 1000
@@ -302,11 +302,11 @@ def _run_fast(
         score = _parse_score(text)
         blocker = "blocker: yes" in text.lower() or "blocker:yes" in text.lower()
 
-        if r.task_name == "codex":
+        if r.task_id == "codex":
             critic_text = text
             critic_score = score
             has_blocker = blocker
-        elif r.task_name == "gemini_fast":
+        elif r.task_id == "gemini_fast":
             gemini_fast_score = score
             gemini_fast_blocker = blocker
             print(f"      → Gemini Flash-Lite: {score}/10 | Blocker: {'YES' if blocker else 'NO'}")
@@ -634,7 +634,7 @@ def _run_standard(
 #  FULL HORCRUX Mode
 # ═══════════════════════════════════════════════════════════
 
-def _run_full_horcrux(
+def _run_full(
     task: str, config: dict, session_id: str, plan: StagePlan,
     i_session: Optional[InteractiveSession] = None,
 ) -> dict:
@@ -775,10 +775,6 @@ def main():
 
     # direct execution
     mode_override = None if args.mode == "auto" else args.mode
-    # full → full_horcrux (orchestrator 내부 호환)
-    if mode_override == "full":
-        mode_override = "full_horcrux"
-
     result = run_adaptive(
         task=task,
         mode_override=mode_override,

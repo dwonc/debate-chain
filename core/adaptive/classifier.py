@@ -28,9 +28,14 @@ from .config import get_config
 class HorcruxMode(str, Enum):
     FAST          = "fast"
     STANDARD      = "standard"
-    FULL_HORCRUX  = "full_horcrux"
-    FULL          = "full"           # v8: full_horcrux alias
-    PARALLEL      = "parallel"       # v8: pair2/3 전용
+    FULL          = "full"           # R10: 정식 이름 (full_horcrux 통합)
+    PARALLEL      = "parallel"       # pair2/3 전용
+
+
+def normalize_mode(mode: str) -> str:
+    """R10: mode 문자열 정규화 — full_horcrux → full, 알 수 없는 값은 그대로 반환."""
+    _ALIASES = {"full_horcrux": "full", "fullhorcrux": "full"}
+    return _ALIASES.get(mode.lower().strip(), mode.lower().strip())
 
 
 class InternalEngine(str, Enum):
@@ -73,12 +78,8 @@ class ClassificationResult:
     detected_intent: DetectedIntent = DetectedIntent.FEATURE_ADD
 
     def to_dict(self) -> dict:
-        mode_val = self.recommended_mode.value
-        # full_horcrux → full (외부 표시용 통일)
-        if mode_val == "full_horcrux":
-            mode_val = "full"
         return {
-            "recommended_mode": mode_val,
+            "recommended_mode": self.recommended_mode.value,
             "internal_engine": self.internal_engine.value,
             "routing_source": self.routing_source.value,
             "reason": self.reason,
@@ -132,7 +133,7 @@ _FAST_KEYWORDS = {
     "주석", "린트", "클린업", "소소한",
 }
 
-_FULL_HORCRUX_KEYWORDS = {
+_FULL_KEYWORDS = {  # R10: renamed from _FULL_KEYWORDS
     # 영어
     "architecture", "refactor", "redesign", "migration", "portfolio",
     "presentation", "pitch", "proposal", "system design", "infrastructure",
@@ -259,7 +260,7 @@ def _heuristic_classify(
     """
 
     fast_hits = _keyword_match_score(task_description, _FAST_KEYWORDS)
-    full_hits = _keyword_match_score(task_description, _FULL_HORCRUX_KEYWORDS)
+    full_hits = _keyword_match_score(task_description, _FULL_KEYWORDS)
 
     # ── Rule 1: artifact type 강제 ──
     if artifact_type in _ARTIFACT_FULL_TYPES:
@@ -429,7 +430,7 @@ def classify_task_complexity(
             )
         if user_mode_override == "deep_refactor":
             return ClassificationResult(
-                recommended_mode=HorcruxMode.FULL_HORCRUX,
+                recommended_mode=HorcruxMode.FULL,
                 routing_source=RoutingSource.OVERRIDE,
                 reason="user override → deep_refactor",
                 confidence=1.0,
@@ -443,7 +444,7 @@ def classify_task_complexity(
             _mode_to_engine = {
                 HorcruxMode.FAST: InternalEngine.ADAPTIVE_FAST,
                 HorcruxMode.STANDARD: InternalEngine.ADAPTIVE_STANDARD,
-                HorcruxMode.FULL_HORCRUX: InternalEngine.ADAPTIVE_FULL,
+                HorcruxMode.FULL: InternalEngine.ADAPTIVE_FULL,
                 HorcruxMode.FULL: InternalEngine.ADAPTIVE_FULL,
             }
             engine = _mode_to_engine.get(mode, InternalEngine.ADAPTIVE_STANDARD)
@@ -482,7 +483,7 @@ def classify_task_complexity(
                 detected_intent, mode, artifact_type, estimated_scope, risk_level,
             )
             # high risk escalation
-            if risk_level == "high" and final_mode not in (HorcruxMode.FULL, HorcruxMode.FULL_HORCRUX):
+            if risk_level == "high" and final_mode not in (HorcruxMode.FULL, HorcruxMode.FULL):
                 final_mode = HorcruxMode.FULL
                 if engine in (InternalEngine.ADAPTIVE_FAST, InternalEngine.ADAPTIVE_STANDARD):
                     engine = InternalEngine.ADAPTIVE_FULL

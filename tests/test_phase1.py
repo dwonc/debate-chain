@@ -52,7 +52,7 @@ class TestClassifyTaskComplexity:
             risk_level="high",
             artifact_type="ppt",
         )
-        assert result.recommended_mode == HorcruxMode.FULL_HORCRUX
+        assert result.recommended_mode == HorcruxMode.FULL
         assert result.confidence >= 0.75
 
     def test_feature_add_routes_to_standard(self):
@@ -73,7 +73,7 @@ class TestClassifyTaskComplexity:
             estimated_scope="large",
             risk_level="high",
         )
-        assert result.recommended_mode == HorcruxMode.FULL_HORCRUX
+        assert result.recommended_mode == HorcruxMode.FULL
 
     def test_user_override_takes_priority(self):
         result = classify_task_complexity(
@@ -84,7 +84,7 @@ class TestClassifyTaskComplexity:
             risk_level="low",
             user_mode_override="full_horcrux",
         )
-        assert result.recommended_mode == HorcruxMode.FULL_HORCRUX
+        assert result.recommended_mode == HorcruxMode.FULL
         assert result.routing_source == RoutingSource.OVERRIDE
         assert result.confidence == 1.0
 
@@ -125,7 +125,7 @@ class TestClassifyEdgeCases:
             task_description="update the config",
             risk_level="high",
         )
-        assert result.recommended_mode == HorcruxMode.FULL_HORCRUX
+        assert result.recommended_mode == HorcruxMode.FULL
 
 
 # ═══════════════════════════════════════════════════════════
@@ -150,7 +150,7 @@ class TestBuildStagePlan:
         assert "revision" in plan.enabled_stages
 
     def test_full_horcrux_mode_stages(self):
-        plan = build_stage_plan(HorcruxMode.FULL_HORCRUX)
+        plan = build_stage_plan(HorcruxMode.FULL)
         assert "pair_generation" in plan.enabled_stages
         assert "core_critic" in plan.enabled_stages
         assert "conditional_aux_critic" in plan.enabled_stages

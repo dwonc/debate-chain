@@ -23,6 +23,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import threading
 import time
 import uuid
@@ -242,7 +243,8 @@ class SideEffectEntry:
     tool_args: dict = field(default_factory=dict)
     result_summary: str = ""
     timestamp: float = field(default_factory=time.time)
-    compensating_action: Optional[str] = None
+    # R05: 감사 전용 — 실행되지 않음. 향후 typed action으로 전환 필요.
+    compensating_action: Optional[str] = None  # audit-only, never eval'd
     compensated: bool = False
 
     def serialize(self) -> dict:
@@ -491,7 +493,11 @@ class Checkpoint:
 
 class CheckpointStore:
     def __init__(self, session_id: str, base_dir: str = "checkpoints", retention: int = 10):
-        self._dir = Path(base_dir) / session_id
+        # R04: session_id path traversal 차단
+        safe_id = re.sub(r'[^a-zA-Z0-9_\-]', '_', session_id)
+        self._dir = Path(base_dir) / safe_id
+        if not self._dir.resolve().is_relative_to(Path(base_dir).resolve()):
+            raise ValueError(f"Invalid session_id: path traversal detected: {session_id}")
         self._dir.mkdir(parents=True, exist_ok=True)
         self._retention = retention
 

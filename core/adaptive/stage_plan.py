@@ -44,7 +44,7 @@ _MODE_PIPELINES = {
         Stage.REVISION,
         Stage.FINALIZE,
     ],
-    HorcruxMode.FULL_HORCRUX: [
+    HorcruxMode.FULL: [
         Stage.PAIR_GENERATION,
         Stage.SYNTH,
         Stage.CORE_CRITIC,
@@ -107,7 +107,7 @@ def build_stage_plan(
         reasons.append(f"artifact_type={artifact_type}: content drift 방지 적용")
 
     # ── document 작업에서 aux critic 생략 (standard에는 원래 없음) ──
-    if task_type == "document" and recommended_mode == HorcruxMode.FULL_HORCRUX:
+    if task_type == "document" and recommended_mode == HorcruxMode.FULL:
         # 문서 작업은 aux critic 효용이 낮으므로 선택적 제거 가능
         # 단, full_horcrux에서는 유지 (conditional이니까 나중에 should_run_aux에서 판단)
         reasons.append("document task: aux_critic은 conditional로 유지")

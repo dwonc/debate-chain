@@ -222,7 +222,7 @@ def _infer_mode(data: dict, filename: str) -> str:
     if data.get("round") is not None or data.get("raw_steps"):
         status = data.get("status", "")
         if status == "converged" or data.get("avg_score", 0) >= 7.5:
-            return "full_horcrux"
+            return "full"
         return "standard"
     return "unknown"
 
@@ -287,7 +287,7 @@ def suggest_heuristic_refinements(
 
     fast = mode_stats.get("fast")
     standard = mode_stats.get("standard")
-    full = mode_stats.get("full_horcrux")
+    full = mode_stats.get("full") or mode_stats.get("full_horcrux")
 
     # fast mode가 score 낮으면 → fast 기준 타이트하게
     if fast and fast.avg_score < 6.0 and fast.usage_count >= 3:
@@ -296,10 +296,10 @@ def suggest_heuristic_refinements(
         )
         refinement.threshold_adjustments["fast_min_confidence"] = 0.90
 
-    # full_horcrux가 latency 과도하면 → standard로 더 많이 라우팅
+    # full이 latency 과도하면 → standard로 더 많이 라우팅
     if full and full.avg_latency_ms > 120000 and standard:
         refinement.suggestions.append(
-            f"full_horcrux avg_latency={full.avg_latency_ms:.0f}ms (> 120s) — standard 라우팅 비중 확대 고려"
+            f"full avg_latency={full.avg_latency_ms:.0f}ms (> 120s) — standard 라우팅 비중 확대 고려"
         )
 
     # standard convergence rate 높으면 → standard 충분
@@ -321,17 +321,17 @@ def suggest_heuristic_refinements(
 # 3. LLM Fallback for Classification
 # ═══════════════════════════════════════════
 
-LLM_CLASSIFY_PROMPT = """Classify this task into one of: fast, standard, full_horcrux.
+LLM_CLASSIFY_PROMPT = """Classify this task into one of: fast, standard, full.
 
 Rules:
 - fast: trivial changes (typo fix, rename, lint, simple bug fix)
 - standard: moderate changes (new feature, test, refactor 1-3 files)
-- full_horcrux: complex changes (architecture, multi-file refactor, security, production deploy)
+- full: complex changes (architecture, multi-file refactor, security, production deploy)
 
 Task: {task}
 Type: {task_type}
 
-Respond with ONLY one word: fast, standard, or full_horcrux"""
+Respond with ONLY one word: fast, standard, or full"""
 
 
 def build_llm_classify_prompt(task: str, task_type: str = "code") -> str:
@@ -346,10 +346,11 @@ def parse_llm_classify_response(response_text: str) -> Tuple[str, float]:
     """LLM 응답에서 mode를 파싱. (mode, confidence)."""
     text = response_text.strip().lower()
 
-    for mode in ("full_horcrux", "standard", "fast"):
+    for mode in ("full", "full_horcrux", "standard", "fast"):
         if mode in text:
+            resolved = "full" if mode == "full_horcrux" else mode
             confidence = 0.80 if text == mode else 0.70
-            return mode, confidence
+            return resolved, confidence
 
     return "standard", 0.50
 

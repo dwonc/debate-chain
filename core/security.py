@@ -162,6 +162,30 @@ def run_cli_tempfile(
             pass
 
 
+# ─── R06: path traversal 차단 ───
+_ALLOWED_ROOTS = [
+    Path(p).resolve()
+    for p in os.environ.get("HORCRUX_ALLOWED_ROOTS", "").split(os.pathsep)
+    if p.strip()
+]
+
+
+def validate_project_dir(project_dir: str) -> Path:
+    """project_dir이 허용된 루트 하위인지 검증. 실패 시 ValueError."""
+    if not project_dir:
+        raise ValueError("project_dir is empty")
+    resolved = Path(project_dir).resolve()
+    if not resolved.is_dir():
+        raise ValueError(f"project_dir does not exist: {resolved}")
+    if _ALLOWED_ROOTS:
+        if not any(resolved.is_relative_to(root) for root in _ALLOWED_ROOTS):
+            raise ValueError(
+                f"project_dir '{resolved}' is outside allowed roots: "
+                f"{[str(r) for r in _ALLOWED_ROOTS]}"
+            )
+    return resolved
+
+
 def load_secret(key: str, default: str = "") -> str:
     """환경변수에서만 비밀값 로드 (config.json 금지)"""
     val = os.environ.get(key, default)

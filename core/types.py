@@ -5,7 +5,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field, asdict
 from datetime import datetime, timezone
 from enum import Enum
-from typing import Any, Dict, List, Optional
+from typing import Any, Callable, Dict, List, Optional, Protocol, runtime_checkable
 
 
 class TaskType(str, Enum):
@@ -85,3 +85,78 @@ class ToolResult:
         if self.success:
             return f"[Tool: {self.tool}]\n{self.output}\n[/Tool]"
         return f"[Tool: {self.tool} FAILED]\n{self.error}\n[/Tool]"
+
+
+# ═══════════════════════════════════════════
+# R08: Unified Error Hierarchy
+# ═══════════════════════════════════════════
+
+class HorcruxError(Exception):
+    """Base error for all Horcrux operations."""
+    pass
+
+
+class CallerError(HorcruxError):
+    """Base error for AI provider calls."""
+    def __init__(self, provider: str, message: str, original: Optional[Exception] = None):
+        self.provider = provider
+        self.original = original
+        super().__init__(f"[{provider}] {message}")
+
+
+class CallerTimeoutError(CallerError):
+    """AI provider call exceeded timeout."""
+    pass
+
+
+class QuotaExhaustedError(CallerError):
+    """AI provider quota/rate limit exceeded."""
+    pass
+
+
+class ModelUnavailableError(CallerError):
+    """AI model is unavailable (404, maintenance, etc.)."""
+    pass
+
+
+class ParseError(CallerError):
+    """Failed to parse AI provider response."""
+    pass
+
+
+class InputError(HorcruxError):
+    """Invalid user input."""
+    pass
+
+
+class PersistenceError(HorcruxError):
+    """Failed to read/write state or logs."""
+    pass
+
+
+class SecurityError(HorcruxError):
+    """Security violation (path traversal, injection, etc.)."""
+    pass
+
+
+# ═══════════════════════════════════════════
+# R09: Protocol definitions
+# ═══════════════════════════════════════════
+
+@runtime_checkable
+class CompactMemoryProtocol(Protocol):
+    """Contract for compact memory implementations."""
+    def to_dict(self) -> Dict[str, Any]: ...
+    def inject_human_directive(self, directive: str) -> None: ...
+
+
+# Type alias for engine callables (AI provider functions)
+EngineCallable = Callable[[str], str]  # prompt → response text
+
+
+@runtime_checkable
+class InteractiveSessionProtocol(Protocol):
+    """Contract for interactive session (pause/resume/rollback)."""
+    session_id: str
+    def check_pause_point(self, point: str) -> None: ...
+    def to_dict(self) -> Dict[str, Any]: ...

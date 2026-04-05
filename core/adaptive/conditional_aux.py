@@ -70,9 +70,9 @@ def should_run_aux_critics(
 
     # ── Activation conditions ──
 
-    # full_horcrux → 항상 활성화
-    if mode == "full_horcrux":
-        return AuxDecision(run_aux=True, reason="full_horcrux mode — aux always active")
+    # full → 항상 활성화 (R10: full_horcrux → full 통합)
+    if mode in ("full", "full_horcrux"):
+        return AuxDecision(run_aux=True, reason="full mode — aux always active")
 
     # high-risk → 활성화
     if risk_level == "high":

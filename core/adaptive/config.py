@@ -119,24 +119,33 @@ class AdaptiveHorcruxConfig:
             except Exception as e:
                 print(f"[AdaptiveConfig] config load warning: {e}")
 
-        # 환경변수 override (timeout)
-        cfg.timeouts = TimeoutConfig.from_env()
+        # R11: 환경변수 override — config.json 값 위에 덮어쓰기 (설정된 것만)
+        env_overrides = TimeoutConfig.from_env()
+        for fld in TimeoutConfig.__dataclass_fields__:
+            env_key = f"HORCRUX_TIMEOUT_{fld.upper()}"
+            if os.environ.get(env_key):
+                setattr(cfg.timeouts, fld, getattr(env_overrides, fld))
 
         return cfg
 
 
-# 싱글턴 편의 함수
+# R11: thread-safe 싱글턴
+import threading
 _instance: Optional[AdaptiveHorcruxConfig] = None
+_config_lock = threading.Lock()
 
 
 def get_config() -> AdaptiveHorcruxConfig:
     global _instance
     if _instance is None:
-        _instance = AdaptiveHorcruxConfig.load()
+        with _config_lock:
+            if _instance is None:
+                _instance = AdaptiveHorcruxConfig.load()
     return _instance
 
 
 def reload_config(config_path: Optional[str | Path] = None) -> AdaptiveHorcruxConfig:
     global _instance
-    _instance = AdaptiveHorcruxConfig.load(config_path)
+    with _config_lock:
+        _instance = AdaptiveHorcruxConfig.load(config_path)
     return _instance

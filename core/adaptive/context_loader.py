@@ -31,8 +31,10 @@ class ProjectContext:
     @classmethod
     def load(cls, project_dir: str) -> "ProjectContext":
         """프로젝트 루트에서 .horcrux/ 디렉토리를 찾아 context를 로드."""
-        ctx = cls(project_dir=project_dir)
-        horcrux_dir = Path(project_dir) / ".horcrux"
+        # R06: path 검증은 caller(server.py)에서 수행 — 여기서는 resolve만
+        resolved_dir = str(Path(project_dir).resolve())
+        ctx = cls(project_dir=resolved_dir)
+        horcrux_dir = Path(resolved_dir) / ".horcrux"
 
         if not horcrux_dir.is_dir():
             return ctx

@@ -200,7 +200,8 @@ class DeltaPrompt:
 MEMORY_POLICY = {
     "fast": ["working"],
     "standard": ["working", "result_summary"],
-    "full_horcrux": ["working", "decision", "result_summary"],
+    "full": ["working", "decision", "result_summary"],
+    "full_horcrux": ["working", "decision", "result_summary"],  # R10: deprecated alias
 }
 
 

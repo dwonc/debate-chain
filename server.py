@@ -18,36 +18,34 @@ from pathlib import Path
 # Windows cp949 콘솔에서 유니코드 출력 크래시 방지
 os.environ.setdefault("PYTHONIOENCODING", "utf-8")
 
-# .env 자동 로딩 (start.bat 없이 직접 실행해도 API 키 사용 가능)
-_env_file = Path(__file__).parent / ".env"
-if _env_file.exists():
-    with open(_env_file, "r", encoding="utf-8") as _ef:
-        for _line in _ef:
-            _line = _line.strip()
-            if _line and not _line.startswith("#") and "=" in _line:
-                _k, _v = _line.split("=", 1)
-                _k, _v = _k.strip(), _v.strip()
-                if _k and _k not in os.environ:
-                    os.environ[_k] = _v
+# .env 자동 로딩 (R03: python-dotenv 사용, 기존 수동 파싱 대체)
+try:
+    from dotenv import load_dotenv
+    load_dotenv(Path(__file__).parent / ".env", override=False)
+except ImportError:
+    # dotenv 미설치 시 최소한의 수동 로딩 (fallback)
+    _env_file = Path(__file__).parent / ".env"
+    if _env_file.exists():
+        with open(_env_file, "r", encoding="utf-8") as _ef:
+            for _line in _ef:
+                _line = _line.strip()
+                if _line and not _line.startswith("#") and "=" in _line:
+                    _k, _v = _line.split("=", 1)
+                    _k, _v = _k.strip(), _v.strip()
+                    if _k and _k not in os.environ:
+                        os.environ[_k] = _v
 
 from planning_v2 import register_planning_v2_routes
 from deep_refactor import inject_callers as inject_drf_callers, deep_refactors, run_deep_refactor, create_state as create_drf_state
 from flask import Flask, request, jsonify, render_template_string, Response
+from core.security import validate_project_dir
 
 app = Flask(__name__)
 
 LOG_DIR = Path(__file__).parent / "logs"
 LOG_DIR.mkdir(exist_ok=True)
 
-# --- Gemini model fallback ---
-GEMINI_MODELS = [
-    "gemini-3-flash-preview",  # 3세대 (1순위)
-    "gemini-2.5-flash",        # 폴백
-    "gemini-2.5-pro",          # 폴백
-    "gemini-2.0-flash",        # 폴백
-]
-_gemini_current_model_idx = 0
-_gemini_lock = threading.Lock()
+# R12: Gemini/Claude/Codex 모든 caller는 core.llm에서 관리
 
 # ═══════════════════════════════════════════
 # PROMPTS
@@ -200,8 +198,13 @@ Reply JSON only:
 # UTILITIES
 # ═══════════════════════════════════════════
 
+def is_caller_error(text) -> bool:
+    """R08: [ERROR] 문자열 체크를 중앙화 — Phase 2에서 CallerError 예외로 전환 예정."""
+    return not text or "[ERROR]" in (text or "")
+
+
 def extract_json(text):
-    if not text or "[ERROR]" in text:
+    if is_caller_error(text):
         return None
     cleaned = re.sub(r'```(?:json)?\s*', '', text).replace('```', '').strip()
     try:
@@ -575,374 +578,65 @@ def extract_debate_artifact(state: dict) -> dict:
 import platform
 import shutil
 
-_NPM = r"C:\Users\User\AppData\Roaming\npm"
-MAX_PROMPT_CHARS = 60000   # 50개 아이디어급 긴 컨텍스트 수용
-MAX_PROMPT_RETRY = 30000   # 타임아웃 재시도 시 프롬프트 절반으로 줄여서 재시도 (Claude/Gemini의 긴 프롬프트 처리 문제 완화)
+_NPM = os.environ.get("CLI_BIN_DIR", "") or (
+    os.path.join(os.environ.get("APPDATA", ""), "npm")
+    if platform.system() == "Windows" else "/usr/local/bin"
+)
+# R12: MAX_PROMPT_CHARS/MAX_PROMPT_RETRY는 core.llm에서 관리
 
-# ── Claude 모델 스위칭 ──
-CLAUDE_MODELS = {
-    "opus": "claude-opus-4-6",       # Max 구독
-    "sonnet": "claude-sonnet-4-6",   # Pro 구독
-}
-
-
-def _truncate_prompt(prompt: str, max_chars: int) -> str:
-    """프롬프트 양끝 보존, 중간 잘라내기"""
-    if len(prompt) <= max_chars:
-        return prompt
-    keep = max_chars // 2 - 80
-    cut = len(prompt) - max_chars
-    return (
-        prompt[:keep]
-        + f"\n\n...[TRUNCATED {cut} chars to fit context]...\n\n"
-        + prompt[-keep:]
-    )
+# ── R02: 입력 sanitize ──
+def _sanitize_task(task: str) -> str:
+    """format-string 메타문자 이스케이프 — prompt injection 방지."""
+    return task.replace("{", "{{").replace("}", "}}")
 
 
-def _win(name: str) -> str:
-    return f"{_NPM}\\{name}.cmd"
+# ── R07: 로그 저장 시 비밀 스크러빙 ──
+from core.security import redact as _redact_secrets
+
+def _save_log(log_path: Path, state: dict):
+    """로그 저장 — API 키/토큰 등 민감 정보 제거 후 기록."""
+    raw = json.dumps(state, ensure_ascii=False, indent=2)
+    scrubbed = _redact_secrets(raw)
+    with open(log_path, "w", encoding="utf-8") as f:
+        f.write(scrubbed)
+
+# ── R12: AI Callers → core/llm로 추출 ──
+from core.llm import (
+    call_claude, call_codex, call_gemini, call_gemini_fast,
+    _call_aux_critic, _truncate_prompt, _truncate_for_aux,
+    CLAUDE_MODELS, GEMINI_MODELS, GEMINI_FAST_MODELS,
+    AUX_CRITIC_ENDPOINTS, AUX_MAX_PROMPT_CHARS,
+    MAX_PROMPT_CHARS as _LLM_MAX_PROMPT, MAX_PROMPT_RETRY as _LLM_MAX_RETRY,
+)
 
 
-def call_claude(prompt: str, timeout: int = 900, model: str = "claude-sonnet-4-6", _retry: int = 0) -> str:
-    """Claude CLI - stdin 방식. model 파라미터로 Opus/Sonnet 전환. overloaded 시 1회 재시도.
-    기본값: Sonnet (실험 결과: full 모드에서 Opus와 동등, 비용 1/10)"""
-    import tempfile
-    prompt = _truncate_prompt(prompt, MAX_PROMPT_CHARS)
-    try:
-        if platform.system() == "Windows":
-            cmd = ["cmd", "/c", _win("claude"), "-p"]
-        else:
-            exe = shutil.which("claude") or "claude"
-            cmd = [exe, "-p"]
-        if model:
-            cmd.extend(["--model", model])
-        r = subprocess.run(
-            cmd,
-            input=prompt,
-            capture_output=True, text=True,
-            timeout=timeout, encoding="utf-8", errors="replace",
-            cwd=tempfile.gettempdir()
-        )
-        out = r.stdout.strip()
-        if r.returncode != 0 and not out:
-            return f"[ERROR] Claude (rc={r.returncode}): {r.stderr[:500]}"
-        # overloaded_error 감지 → 30초 대기 후 1회 재시도
-        if out and "overloaded" in out.lower() and _retry < 1:
-            print(f"  [CLAUDE] Overloaded — retrying in 30s...")
-            time.sleep(30)
-            return call_claude(prompt, timeout, model, _retry=_retry + 1)
-        return out if out else f"[ERROR] Claude empty: {r.stderr[:300]}"
-    except subprocess.TimeoutExpired: return "[ERROR] Claude timeout"
-    except FileNotFoundError: return "[ERROR] Claude CLI not found"
-    except Exception as e: return f"[ERROR] Claude: {str(e)[:500]}"
-
-
-def _call_openai_sdk(prompt: str, timeout: int = 180) -> str:
-    """Codex fallback 1순위: OpenAI SDK (GPT-4o-mini → GPT-4o)"""
-    api_key = os.environ.get("OPENAI_API_KEY", "")
-    if not api_key:
-        return ""
-    try:
-        from openai import OpenAI
-        client = OpenAI(api_key=api_key)
-        for model in ["gpt-4o-mini", "gpt-4o"]:
-            try:
-                resp = client.chat.completions.create(
-                    model=model,
-                    messages=[{"role": "user", "content": prompt}],
-                    max_tokens=16000, timeout=timeout,
-                )
-                text = resp.choices[0].message.content or ""
-                if text.strip():
-                    print(f"[FALLBACK] Codex CLI → OpenAI SDK/{model}")
-                    return text.strip()
-            except Exception as e:
-                if any(kw in str(e).lower() for kw in ["rate", "quota", "billing"]):
-                    continue
-                raise
-    except ImportError:
-        try:
-            import requests as _req
-            for model in ["gpt-4o-mini", "gpt-4o"]:
-                try:
-                    r = _req.post("https://api.openai.com/v1/chat/completions",
-                        headers={"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"},
-                        json={"model": model, "messages": [{"role": "user", "content": prompt}], "max_tokens": 16000},
-                        timeout=timeout)
-                    if r.status_code == 200:
-                        text = r.json()["choices"][0]["message"]["content"].strip()
-                        if text:
-                            print(f"[FALLBACK] Codex CLI → OpenAI REST/{model}")
-                            return text
-                except Exception:
-                    continue
-        except ImportError:
-            pass
-    return ""
-
-
-def _call_opensource_fallback(prompt: str, timeout: int = 120) -> str:
-    """Codex fallback 2순위: 오픈소스 API (무료)"""
-    try:
-        import requests as _req
-    except ImportError:
-        return ""
-    for name, base, env_key, model, extra_h in [
-        ("Groq", "https://api.groq.com/openai/v1", "GROQ_API_KEY", "llama-3.3-70b-versatile", {}),
-        ("Cerebras", "https://api.cerebras.ai/v1", "CEREBRAS_API_KEY", "llama-3.3-70b", {}),
-        ("OpenRouter", "https://openrouter.ai/api/v1", "OPENROUTER_API_KEY", "meta-llama/llama-3.3-70b-instruct:free",
-         {"HTTP-Referer": "https://github.com/horcrux", "X-Title": "Horcrux"}),
-    ]:
-        key = os.environ.get(env_key, "")
-        if not key:
-            continue
-        try:
-            h = {"Authorization": f"Bearer {key}", "Content-Type": "application/json"}
-            h.update(extra_h)
-            r = _req.post(f"{base}/chat/completions", headers=h, json={
-                "model": model, "messages": [{"role": "user", "content": prompt}],
-                "max_tokens": 8192, "temperature": 0.7}, timeout=timeout)
-            r.raise_for_status()
-            text = r.json()["choices"][0]["message"]["content"].strip()
-            if text:
-                print(f"[FALLBACK] → {name}/{model}")
-                return text
-        except Exception as e:
-            print(f"[FALLBACK] {name} failed: {str(e)[:200]}")
-    return ""
-
-
-def _codex_fallback(prompt: str) -> str:
-    """Codex CLI 실패 시 전체 fallback: OpenAI SDK → 오픈소스"""
-    result = _call_openai_sdk(prompt)
-    if result:
-        return result
-    result = _call_opensource_fallback(prompt)
-    if result:
-        return result
-    return "[ERROR] Codex CLI failed. Set OPENAI_API_KEY (best) or GROQ_API_KEY (free) in .env"
-
-
-def call_codex(prompt: str, timeout: int = 600) -> str:
-    """Codex CLI → OpenAI SDK → Open Source API 자동 전환"""
-    prompt = _truncate_prompt(prompt, MAX_PROMPT_CHARS)
-    try:
-        if platform.system() == "Windows":
-            cmd = ["cmd", "/c", _win("codex"), "exec", "--skip-git-repo-check"]
-        else:
-            exe = shutil.which("codex") or "codex"
-            cmd = [exe, "exec", "--skip-git-repo-check"]
-        r = subprocess.run(
-            cmd,
-            input=prompt,
-            capture_output=True, text=True,
-            timeout=timeout, encoding="utf-8", errors="replace"
-        )
-        out = r.stdout.strip()
-        if r.returncode == 0 and out and "[ERROR]" not in out:
-            return out
-        if r.returncode != 0 or not out:
-            fb = _codex_fallback(prompt)
-            if "[ERROR]" not in fb:
-                return fb
-        return out if out else f"[ERROR] Codex (rc={r.returncode}): {(r.stderr or '')[:500]}"
-    except FileNotFoundError:
-        return _codex_fallback(prompt)
-    except subprocess.TimeoutExpired: return "[ERROR] Codex timeout"
-    except Exception as e:
-        fb = _codex_fallback(prompt)
-        if "[ERROR]" not in fb:
-            return fb
-        return f"[ERROR] Codex: {str(e)[:500]}"
-
-
-def _call_gemini_with_model(prompt: str, model: str, timeout: int = 300):
-    """Gemini 호출. API 키 있으면 API(max_output_tokens 제어), 없으면 CLI fallback."""
-    _all_gemini = set(GEMINI_MODELS) | set(GEMINI_FAST_MODELS)
-    if model not in _all_gemini:
-        return "[ERROR] Invalid Gemini model", "error"
-
-    prompt = _truncate_prompt(prompt, MAX_PROMPT_CHARS)
-
-    # ── 방법 1: Gemini API (GEMINI_API_KEY 있으면 우선 사용) ──
-    gemini_key = os.environ.get("GEMINI_API_KEY", "")
-    if gemini_key:
-        try:
-            import requests as _req
-            api_url = f"https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent?key={gemini_key}"
-            resp = _req.post(api_url, json={
-                "contents": [{"parts": [{"text": prompt}]}],
-                "generationConfig": {
-                    "maxOutputTokens": 16384,
-                    "temperature": 0.7,
-                },
-            }, timeout=timeout)
-            if resp.status_code == 429:
-                return None, "quota"
-            if resp.status_code == 503:
-                # 서비스 불가 (과부하/deprecation) → 다음 모델로 폴백
-                return None, "quota"
-            if resp.status_code == 404:
-                # 모델 삭제됨 (deprecation) → 다음 모델로 폴백
-                print(f"  [WARN] Gemini model {model} deprecated (404)")
-                return None, "quota"
-            if resp.status_code == 200:
-                data = resp.json()
-                candidates = data.get("candidates", [])
-                if candidates:
-                    parts = candidates[0].get("content", {}).get("parts", [])
-                    text = "".join(p.get("text", "") for p in parts).strip()
-                    if text:
-                        return text, "ok"
-                # empty response → 다음 모델로 폴백
-                return None, "quota"
-            else:
-                err_text = resp.text[:300]
-                if "quota" in err_text.lower() or "exhausted" in err_text.lower():
-                    return None, "quota"
-                return f"[ERROR] Gemini API {resp.status_code}: {err_text}", "error"
-        except Exception as e:
-            # API 실패 → CLI fallback
-            pass
-
-    # ── 방법 2: Gemini CLI (fallback) ──
-    def _run(p: str, t: int):
-        try:
-            if platform.system() == "Windows":
-                cmd = ["cmd", "/c", _win("gemini"), "--model", model]
-            else:
-                exe = shutil.which("gemini") or "gemini"
-                cmd = [exe, "--model", model]
-            r = subprocess.run(
-                cmd, input=p, capture_output=True, text=True,
-                timeout=t, encoding="utf-8", errors="replace", shell=False
-            )
-            out = r.stdout.strip()
-            stderr = r.stderr or ""
-            if "quota" in stderr.lower() or "exhausted" in stderr.lower():
-                return None, "quota"
-            if r.returncode != 0 and not out:
-                return f"[ERROR] Gemini/{model}: {stderr[:300]}", "error"
-            if not out:
-                return None, "quota"  # empty → 다음 모델로 폴백
-            return out, "ok"
-        except subprocess.TimeoutExpired:
-            return "[TIMEOUT]", "timeout"
-        except FileNotFoundError:
-            return "[ERROR] Gemini CLI not found", "error"
-        except Exception as e:
-            return f"[ERROR] Gemini: {str(e)[:300]}", "error"
-
-    out, status = _run(prompt, timeout)
-    if status == "timeout":
-        short = _truncate_prompt(prompt, MAX_PROMPT_RETRY)
-        out, status = _run(short, timeout)
-        if status == "timeout":
-            return "[ERROR] Gemini timeout", "error"
-    return out, status
-
-
-def call_gemini(prompt: str, timeout: int = 300) -> str:
-    global _gemini_current_model_idx
-    for attempt in range(len(GEMINI_MODELS)):
-        with _gemini_lock:
-            idx = (_gemini_current_model_idx + attempt) % len(GEMINI_MODELS)
-            model = GEMINI_MODELS[idx]
-        result, status = _call_gemini_with_model(prompt, model, timeout)
-        if status == "quota":
-            with _gemini_lock:
-                _gemini_current_model_idx = (idx + 1) % len(GEMINI_MODELS)
-            continue
-        if status == "ok":
-            with _gemini_lock:
-                _gemini_current_model_idx = idx
-        return result
-    return "[ERROR] Gemini: all models exhausted"
-
-
-# --- Gemini Fast mode (3.1 Flash-Lite) ---
-GEMINI_FAST_MODELS = [
-    "gemini-3.1-flash-lite-preview",  # 3세대 fast 전용
-    "gemini-2.0-flash-lite",          # 폴백
-]
-
-def call_gemini_fast(prompt: str, timeout: int = 60) -> str:
-    """Fast 모드 전용 Gemini critic. Flash-Lite 우선, 실패 시 일반 모델로 폴백."""
-    # 1차: Flash-Lite 계열
-    for model in GEMINI_FAST_MODELS:
-        result, status = _call_gemini_with_model(prompt, model, timeout)
-        if status == "quota":
-            continue
-        if status == "ok":
-            return result
-    # 2차: 일반 Gemini 모델로 크로스 폴백
-    for model in GEMINI_MODELS:
-        result, status = _call_gemini_with_model(prompt, model, timeout)
-        if status == "quota":
-            continue
-        return result
-    return "[ERROR] Gemini Fast: all models exhausted"
 
 
 # ═══════════════════════════════════════════
-# Phase 2: DEBATE ENGINE v7
-# Multi-Critic(Codex+Gemini 병렬) + Synthesizer=Codex + Regression detection + 다차원 수렴
+# DEBATE ENGINE v7 — Global State
 # ═══════════════════════════════════════════
 debates = {}
 
+# ── R15: scoring config 캐시 ──
+_scoring_cache = {}
+_scoring_cache_ts = 0
 
-# ── Auxiliary Open Source API Critics ──
-
-# Aux 3모델: Meta Llama(Dense) + DeepSeek V3(MoE 671B) + GPT-OSS(MoE 117B)
-# 학습 데이터/아키텍처/편향이 전부 다르므로 비판 관점 극대화
-AUX_CRITIC_ENDPOINTS = [
-    ("Groq/Llama", "https://api.groq.com/openai/v1", "GROQ_API_KEY",
-     "llama-3.3-70b-versatile", {}),
-    ("DS/DeepSeek", "https://api.deepseek.com/v1", "DEEPSEEK_API_KEY",
-     "deepseek-chat", {}),
-    ("OR/GPT-OSS", "https://openrouter.ai/api/v1", "OPENROUTER_API_KEY",
-     "openai/gpt-oss-120b:free",
-     {"HTTP-Referer": "https://github.com/horcrux", "X-Title": "Horcrux"}),
-]
-
-AUX_MAX_PROMPT_CHARS = 15000  # Aux는 핵심만 받음. Core는 60K 전체, Aux는 15K 압축
-
-def _truncate_for_aux(prompt: str) -> str:
-    """Aux critic용 프롬프트 압축. 앞뒤 보존, 중간 잘라내기."""
-    if len(prompt) <= AUX_MAX_PROMPT_CHARS:
-        return prompt
-    keep = AUX_MAX_PROMPT_CHARS // 2 - 50
-    cut = len(prompt) - AUX_MAX_PROMPT_CHARS
-    return prompt[:keep] + f"\n\n...[AUX TRUNCATED {cut} chars]...\n\n" + prompt[-keep:]
-
-def _call_aux_critic(name, base_url, env_key, model, extra_headers, prompt, timeout=180):
-    """Aux critic API. 프롬프트 15K 압축 + timeout=180s (3분, 분석 시간 충분히 배정). 서비스 장애(429/네트워크)만 처리."""
-    api_key = os.environ.get(env_key, "")
-    if not api_key:
-        return name, ""
+def _get_scoring_weights() -> tuple:
+    """config.json의 scoring weights를 캐시 (60초 TTL)."""
+    global _scoring_cache, _scoring_cache_ts
+    now = time.time()
+    if now - _scoring_cache_ts < 60 and _scoring_cache:
+        return _scoring_cache.get("core_weight", 0.8), _scoring_cache.get("aux_weight", 0.2)
     try:
-        import requests as _req
-        short_prompt = _truncate_for_aux(prompt)
-        h = {"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"}
-        h.update(extra_headers)
-        r = _req.post(f"{base_url}/chat/completions", headers=h, json={
-            "model": model,
-            "messages": [{"role": "user", "content": short_prompt}],
-            "max_tokens": 8192, "temperature": 0.7,
-        }, timeout=timeout)
-        if r.status_code == 429:
-            print(f"  [AUX] {name} rate limited (429), skipped")
-            return name, ""
-        r.raise_for_status()
-        text = r.json()["choices"][0]["message"]["content"].strip()
-        print(f"  [AUX] {name}/{model} responded ({len(text)} chars)")
-        return name, text
-    except Exception as e:
-        print(f"  [AUX] {name} failed: {str(e)[:150]}")
-        return name, ""
+        with open(Path(__file__).parent / "config.json", "r", encoding="utf-8") as f:
+            _scoring_cache = json.load(f).get("scoring", {})
+            _scoring_cache_ts = now
+    except Exception:
+        pass
+    return _scoring_cache.get("core_weight", 0.8), _scoring_cache.get("aux_weight", 0.2)
 
 
-def run_multi_critic(task, solution, previously_fixed_text, vision_url="", vision_mode="full_horcrux"):
+def run_multi_critic(task, solution, previously_fixed_text, vision_url="", vision_mode="full"):
     """Phase 2+: Codex + Gemini + Aux(Groq/Together/OpenRouter) + Vision 병렬 Critic"""
     prompt = CRITIC_PROMPT.format(
         task=task, solution=solution,
@@ -976,10 +670,26 @@ def run_multi_critic(task, solution, previously_fixed_text, vision_url="", visio
             from core.vision.critic import run_vision_critic
             f_vision = pool.submit(run_vision_critic, vision_url, "desktop", "light")
 
-        codex_raw = f_codex.result()
-        gemini_raw = f_gemini.result()
-        aux_results = [f.result() for f in aux_futures]  # [(name, raw_text), ...]
-        vision_result = f_vision.result() if f_vision else None
+        # R21/P0-001: timeout 적용 — 무한 블로킹 제거
+        _CRITIC_TIMEOUT = 180  # seconds
+        try:
+            codex_raw = f_codex.result(timeout=_CRITIC_TIMEOUT)
+        except Exception as e:
+            codex_raw = f"[ERROR] Codex critic timeout/error: {e}"
+        try:
+            gemini_raw = f_gemini.result(timeout=_CRITIC_TIMEOUT)
+        except Exception as e:
+            gemini_raw = f"[ERROR] Gemini critic timeout/error: {e}"
+        aux_results = []
+        for f in aux_futures:
+            try:
+                aux_results.append(f.result(timeout=_CRITIC_TIMEOUT))
+            except Exception as e:
+                aux_results.append(("aux_timeout", f"[ERROR] Aux critic timeout: {e}"))
+        try:
+            vision_result = f_vision.result(timeout=_CRITIC_TIMEOUT) if f_vision else None
+        except Exception as e:
+            vision_result = None
 
     codex_data = extract_json(codex_raw) or {}
     gemini_data = extract_json(gemini_raw) or {}
@@ -1002,16 +712,8 @@ def run_multi_critic(task, solution, previously_fixed_text, vision_url="", visio
         aux_scores[name] = norm["score"]
         aux_norms.append(norm)
 
-    # 점수 계산: Core min * core_weight + Aux avg * aux_weight
-    # config.json의 scoring.core_weight 사용, 없으면 0.8/0.2 기본값
-    _scoring_cfg = {}
-    try:
-        with open(Path(__file__).parent / "config.json", "r", encoding="utf-8") as _cf:
-            _scoring_cfg = json.load(_cf).get("scoring", {})
-    except Exception:
-        pass
-    _core_w = _scoring_cfg.get("core_weight", 0.8)
-    _aux_w = _scoring_cfg.get("aux_weight", 0.2)
+    # R15: scoring config 캐시 (매번 디스크 읽기 제거)
+    _core_w, _aux_w = _get_scoring_weights()
 
     core_min = min(codex_score, gemini_score)
     if aux_scores:
@@ -1261,9 +963,7 @@ def run_debate(debate_id, task, threshold, max_rounds, initial_solution="", clau
         state["status"] = "aborted"
 
     state["finished_at"] = datetime.now().isoformat()
-    log_file = LOG_DIR / f"{debate_id}.json"
-    with open(log_file, "w", encoding="utf-8") as f:
-        json.dump(state, f, ensure_ascii=False, indent=2)
+    _save_log(LOG_DIR / f"{debate_id}.json", state)
 
     if state["status"] in ("converged", "max_rounds", "completed"):
         _maybe_auto_tune_scoring()
@@ -1368,8 +1068,7 @@ def run_pair(pair_id, task, mode, extra_context="", artifact=None):
             # early return 시에도 로그 저장
             try:
                 log_file = LOG_DIR / f"{pair_id}.json"
-                with open(log_file, "w", encoding="utf-8") as f:
-                    json.dump(state, f, ensure_ascii=False, indent=2)
+                _save_log(log_file, state)
             except Exception: pass
             return
 
@@ -1469,8 +1168,7 @@ def run_pair(pair_id, task, mode, extra_context="", artifact=None):
         state["status"] = "aborted"
     state["finished_at"] = datetime.now().isoformat()
     log_file = LOG_DIR / f"{pair_id}.json"
-    with open(log_file, "w", encoding="utf-8") as f:
-        json.dump(state, f, ensure_ascii=False, indent=2)
+    _save_log(log_file, state)
 
     if state["status"] == "completed":
         _maybe_auto_tune_scoring()
@@ -1580,8 +1278,7 @@ def run_self_improve(sid, task, iterations, initial_solution=""):
 
     state["finished_at"] = datetime.now().isoformat()
     log_file = LOG_DIR / f"{sid}.json"
-    with open(log_file, "w", encoding="utf-8") as f:
-        json.dump(state, f, ensure_ascii=False, indent=2)
+    _save_log(log_file, state)
 
     if state["status"] == "completed":
         _maybe_auto_tune_scoring()
@@ -1600,7 +1297,7 @@ def index():
 @app.route("/api/start", methods=["POST"])
 def start_debate():
     data = request.json
-    task = data.get("task", "").strip()
+    task = _sanitize_task(data.get("task", "").strip())
     if not task: return jsonify({"error": "task required"}), 400
     debate_id = datetime.now().strftime("%Y%m%d_%H%M%S")
     threshold = data.get("threshold", 8.0)
@@ -1623,9 +1320,13 @@ def start_debate():
             if not task or task == parent.get("task", ""):
                 parent_task = parent.get("task", "")
                 task = task or parent_task
-    # project_dir 지정 시 프로젝트 코드를 읽어 task에 context로 첨부
+    # project_dir 지정 시 프로젝트 코드를 읽어 task에 context로 첨부 (R06: 경로 검증)
     project_dir = data.get("project_dir", "")
     if project_dir:
+        try:
+            validate_project_dir(project_dir)
+        except ValueError as e:
+            return jsonify({"error": str(e)}), 400
         project_code = _read_project_files(project_dir)
         if project_code:
             task = (
@@ -1946,7 +1647,7 @@ def _read_project_files(project_dir: str, max_chars: int = 8000) -> str:
 @app.route("/api/pair", methods=["POST"])
 def start_pair():
     data = request.json
-    task = data.get("task", "").strip()
+    task = _sanitize_task(data.get("task", "").strip())
     if not task: return jsonify({"error": "task required"}), 400
     mode = data.get("mode", "pair2")
     extra_context = data.get("context", "")
@@ -2016,7 +1717,7 @@ def pair_stop(pair_id):
 @app.route("/api/debate_pair", methods=["POST"])
 def start_debate_pair():
     data = request.json
-    task = data.get("task", "").strip()
+    task = _sanitize_task(data.get("task", "").strip())
     if not task: return jsonify({"error": "task required"}), 400
     pair_mode = data.get("pair_mode", "pair2")
     threshold = data.get("threshold", 8.0)
@@ -2077,7 +1778,7 @@ def pipeline_result(pipeline_id):
 @app.route("/api/self_improve", methods=["POST"])
 def start_self_improve():
     data = request.json
-    task = data.get("task", "").strip()
+    task = _sanitize_task(data.get("task", "").strip())
     debate_id = data.get("debate_id")  # 기존 debate 결과 이어받기
     iterations = data.get("iterations", 3)
 
@@ -2400,7 +2101,7 @@ horcrux_states = {}
 def horcrux_classify():
     """분류 미리보기 — 실행하지 않고 어떤 모드/엔진이 선택될지 확인."""
     data = request.json
-    task = data.get("task", "").strip()
+    task = _sanitize_task(data.get("task", "").strip())
     if not task:
         return jsonify({"error": "task required"}), 400
     try:
@@ -2436,7 +2137,7 @@ def horcrux_classify():
 def horcrux_run():
     """통합 실행 엔드포인트. classify → engine 결정 → 해당 엔진 호출."""
     data = request.json
-    task = data.get("task", "").strip()
+    task = _sanitize_task(data.get("task", "").strip())
     if not task:
         return jsonify({"error": "task required"}), 400
 
@@ -2547,6 +2248,11 @@ def horcrux_run():
             audience = data.get("audience", "general")
             tone = data.get("tone", "professional")
             project_dir = data.get("project_dir", "")
+            if project_dir:
+                try:
+                    validate_project_dir(project_dir)
+                except ValueError as e:
+                    return jsonify({"error": str(e)}), 400
 
             plannings[planning_id] = {
                 "id": planning_id, "task": task, "task_type": task_type,
@@ -2632,6 +2338,10 @@ def horcrux_run():
             project_dir = data.get("project_dir", "")
             if not project_dir:
                 return jsonify({"error": "project_dir is required for deep_refactor mode"}), 400
+            try:
+                validate_project_dir(project_dir)
+            except ValueError as e:
+                return jsonify({"error": str(e)}), 400
             drf_id = "drf_" + datetime.now().strftime("%Y%m%d_%H%M%S_%f")[:23]
             claude_model_resolved = data.get("claude_model", "opus")
             threshold = data.get("threshold", 7.5)
@@ -2662,6 +2372,11 @@ def horcrux_run():
             max_rounds = data.get("max_rounds", 5)
             threshold = data.get("threshold", 8.0)
             project_dir = data.get("project_dir", "")
+            if project_dir:
+                try:
+                    validate_project_dir(project_dir)
+                except ValueError as e:
+                    return jsonify({"error": str(e)}), 400
             debates[debate_id] = {
                 "id": debate_id, "task": task, "status": "running",
                 "round": 0, "phase": "starting", "messages": [],
@@ -2894,7 +2609,7 @@ if __name__ == "__main__":
         log_dir=str(LOG_DIR),
     )
 
-    print("\nHorcrux v8 — Adaptive Single Entry Point")
+    print("\nHorcrux v8 - Adaptive Single Entry Point")
     print("  External: Auto / Fast / Standard / Full / Parallel / Deep Refactor")
     print("  Internal: adaptive_fast/standard/full, debate_loop, planning_pipeline, pair_generation, self_improve, deep_refactor")
     print("  Unified endpoint: /api/horcrux/run → classify → auto-route")
@@ -2908,4 +2623,6 @@ if __name__ == "__main__":
             print(f"  [AUX] {name}: KEY MISSING ({env_key})")
     print(f"\n  http://localhost:5000")
     print(f"  Modes: Auto | Fast | Standard | Full | Parallel\n")
-    app.run(host="0.0.0.0", port=5000, debug=False)
+    # R06: localhost 전용 바인딩 (외부 접근 차단)
+    _host = os.environ.get("HORCRUX_HOST", "127.0.0.1")
+    app.run(host=_host, port=5000, debug=False)
