@@ -516,6 +516,13 @@ def run_deep_refactor(refactor_id, task, project_dir, claude_model="opus",
                 })
 
         # ══════════════════════════════════════
+        # Phase 3.5: 이슈 검증 패스 (오진 방지)
+        # ══════════════════════════════════════
+        state["phase"] = "verification"
+        state["phase_detail"] = "Verifying issues against actual code"
+        current_plan = _verify_issues(current_plan, project_dir, state, claude_model)
+
+        # ══════════════════════════════════════
         # Phase 4: 최종 결과
         # ══════════════════════════════════════
         if state["status"] == "running":
@@ -715,3 +722,166 @@ def create_state(refactor_id, task, project_dir):
     }
     deep_refactors[refactor_id] = state
     return state
+
+
+# ═══════════════════════════════════════════
+# Phase 3.5: Issue Verification (오진 방지)
+# ═══════════════════════════════════════════
+
+VERIFY_PROMPT = """You are a code audit verifier. You were given a refactoring plan with issues.
+Now you have the ACTUAL source code of the files mentioned in each issue.
+
+## Task
+For each issue below, verify whether it is:
+- **CONFIRMED** — the issue exists in the actual code
+- **FALSE_POSITIVE** — the issue does NOT exist (code already handles it correctly)
+- **PARTIALLY_TRUE** — the issue exists but is less severe than described
+
+## Issues to verify
+{issues_json}
+
+## Actual source code
+{source_code}
+
+## Instructions
+1. Read each issue carefully
+2. Find the relevant code in the source files
+3. Check if the described problem actually exists
+4. Mark false positives clearly
+
+## Output
+Return the SAME JSON structure as the input plan, but:
+- Add "verified": "CONFIRMED" | "FALSE_POSITIVE" | "PARTIALLY_TRUE" to each issue
+- Add "verification_note": "<why>" to each issue
+- Remove issues marked FALSE_POSITIVE from the final plan
+- Keep the overall structure (phases, cross_module_concerns, etc.)
+
+Respond with ONLY the corrected JSON."""
+
+
+def _verify_issues(plan_text: str, project_dir: str, state: dict, claude_model: str = "") -> str:
+    """
+    Phase 3.5: 이슈에서 언급한 파일을 실제로 읽고 Claude에게 검증 요청.
+    오진(false positive)을 제거하여 최종 결과 품질 향상.
+    """
+    base = Path(project_dir)
+    if not base.exists():
+        return plan_text
+
+    # plan에서 언급된 파일 목록 추출
+    try:
+        plan_json = json.loads(plan_text) if isinstance(plan_text, str) else plan_text
+    except (json.JSONDecodeError, TypeError):
+        print("[DRF] Verification skipped — plan is not valid JSON")
+        return plan_text
+
+    mentioned_files = set()
+    phases = plan_json.get("implementation_phases", [])
+    for phase in phases:
+        for issue in phase.get("issues", []):
+            for f in issue.get("files", []):
+                mentioned_files.add(f)
+
+    if not mentioned_files:
+        return plan_text
+
+    # 언급된 파일들의 실제 코드 읽기 (전체 내용)
+    source_chunks = []
+    total = 0
+    MAX_VERIFY_CHARS = 80000  # 검증용은 넉넉하게
+
+    for rel_path in sorted(mentioned_files):
+        candidates = [
+            base / rel_path,
+            base / rel_path.replace("/", "\\"),
+        ]
+        for fpath in candidates:
+            if fpath.exists():
+                try:
+                    content = fpath.read_text(encoding="utf-8", errors="replace")
+                    entry = f"\n### {rel_path}\n```\n{content}\n```"
+                    if total + len(entry) > MAX_VERIFY_CHARS:
+                        remain = MAX_VERIFY_CHARS - total - 100
+                        if remain > 1000:
+                            source_chunks.append(f"\n### {rel_path}\n```\n{content[:remain]}\n[...truncated]\n```")
+                        break
+                    source_chunks.append(entry)
+                    total += len(entry)
+                except Exception:
+                    pass
+                break
+
+    if not source_chunks:
+        print("[DRF] Verification skipped — no mentioned files found")
+        return plan_text
+
+    source_code = "\n".join(source_chunks)
+
+    # critical/high 이슈만 검증 (비용 절감)
+    issues_to_verify = []
+    for phase in phases:
+        for issue in phase.get("issues", []):
+            if issue.get("severity") in ("critical", "high"):
+                issues_to_verify.append({
+                    "id": issue["id"],
+                    "severity": issue["severity"],
+                    "files": issue["files"],
+                    "description": issue["description"][:300],
+                })
+
+    if not issues_to_verify:
+        return plan_text
+
+    print(f"[DRF] Verifying {len(issues_to_verify)} critical/high issues against {len(source_chunks)} files ({total} chars)...")
+
+    prompt = VERIFY_PROMPT.format(
+        issues_json=json.dumps(issues_to_verify, indent=2, ensure_ascii=False),
+        source_code=source_code,
+    )
+
+    raw = _call_claude(prompt, model=claude_model)
+    if not raw:
+        print("[DRF] Verification failed — Claude returned empty")
+        return plan_text
+
+    verified = _extract_json(raw)
+    if not verified:
+        print("[DRF] Verification failed — could not parse response")
+        return plan_text
+
+    # FALSE_POSITIVE 이슈 제거
+    fp_ids = set()
+    if isinstance(verified, dict) and "implementation_phases" in verified:
+        # 전체 plan이 반환된 경우
+        for phase in verified.get("implementation_phases", []):
+            for issue in phase.get("issues", []):
+                if issue.get("verified") == "FALSE_POSITIVE":
+                    fp_ids.add(issue.get("id", ""))
+    elif isinstance(verified, list):
+        # 이슈 목록만 반환된 경우
+        for item in verified:
+            if item.get("verified") == "FALSE_POSITIVE":
+                fp_ids.add(item.get("id", ""))
+
+    if fp_ids:
+        print(f"[DRF] Removing {len(fp_ids)} false positives: {fp_ids}")
+        # 원본 plan에서 false positive 제거
+        for phase in phases:
+            phase["issues"] = [
+                iss for iss in phase.get("issues", [])
+                if iss.get("id") not in fp_ids
+            ]
+        # total_issues 재계산
+        plan_json["total_issues"] = sum(len(p.get("issues", [])) for p in phases)
+        plan_json["false_positives_removed"] = list(fp_ids)
+
+        state["messages"].append({
+            "role": "verification",
+            "msg": f"Removed {len(fp_ids)} false positives: {list(fp_ids)}",
+            "ts": datetime.now().isoformat(),
+        })
+
+        return json.dumps(plan_json, indent=2, ensure_ascii=False)
+    else:
+        print("[DRF] All issues confirmed — no false positives found")
+        return plan_text

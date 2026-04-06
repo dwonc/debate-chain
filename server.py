@@ -864,33 +864,50 @@ def test_connections():
 
 # ── Project-aware debate ──
 
-def _read_project_files(project_dir: str, max_chars: int = 8000) -> str:
+def _read_project_files(project_dir: str, max_chars: int = 50000) -> str:
     """
-    project_dir 아래 .py 파일을 읽어서 텍스트로 반환.
+    project_dir 아래 소스 + 설정 파일을 읽어서 텍스트로 반환.
+    오진 방지: 설정 파일(.gitignore, config.json 등)을 우선 포함.
     max_chars 초과 시 파일 크기 순으로 중요도 높은 것만 포함.
     """
     base = Path(project_dir)
     if not base.exists():
         return ""
 
-    # .py 파일 수집 (테스트/캐시 제외)
-    py_files = []
-    for f in base.rglob("*.py"):
-        if any(p in f.parts for p in ["__pycache__", ".venv", "test", "tests", "migrations"]):
-            continue
-        py_files.append(f)
+    SOURCE_EXTS = {".py", ".js", ".ts", ".json", ".yaml", ".yml", ".toml", ".md"}
+    SKIP_DIRS = {"__pycache__", ".venv", "venv", "node_modules", ".git", "dist", "build"}
 
-    # 크기 순 정렬 (큰 파일 = 핵심 로직)
-    py_files.sort(key=lambda f: f.stat().st_size, reverse=True)
+    # 1순위: 설정 파일 (오진 방지 핵심)
+    config_files = []
+    for name in [".gitignore", ".env.example", "config.json", "requirements.txt",
+                 "package.json", "pyproject.toml", "Dockerfile", "docker-compose.yml"]:
+        cf = base / name
+        if cf.exists():
+            config_files.append(cf)
+
+    # 2순위: 소스 파일 (크기 순)
+    src_files = []
+    for f in base.rglob("*"):
+        if f.is_dir() or f in config_files:
+            continue
+        if any(skip in f.parts for skip in SKIP_DIRS):
+            continue
+        if f.suffix.lower() in SOURCE_EXTS:
+            src_files.append(f)
+    src_files.sort(key=lambda f: f.stat().st_size, reverse=True)
 
     chunks = []
     total = 0
-    for f in py_files:
+    for f in config_files + src_files:
         try:
             content = f.read_text(encoding="utf-8", errors="replace")
             rel = str(f.relative_to(base))
             entry = f"\n### {rel}\n{content}"
             if total + len(entry) > max_chars:
+                # 마지막 파일이라도 앞부분은 포함
+                remain = max_chars - total - 100
+                if remain > 500:
+                    chunks.append(f"\n### {rel}\n{content[:remain]}\n[...truncated]")
                 break
             chunks.append(entry)
             total += len(entry)
