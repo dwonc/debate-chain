@@ -261,25 +261,25 @@ class SideEffectEntry:
 
 class SideEffectJournal:
     def __init__(self):
+        # R40: Dict[round, List] for O(1) round lookup
         self._entries: List[SideEffectEntry] = []
+        self._by_round: Dict[int, List[SideEffectEntry]] = {}
+        self._irreversible_rounds: set = set()
 
     def record(self, entry: SideEffectEntry):
         self._entries.append(entry)
+        self._by_round.setdefault(entry.round_num, []).append(entry)
+        if entry.effect_type == SideEffectType.IRREVERSIBLE:
+            self._irreversible_rounds.add(entry.round_num)
 
     def get_for_round(self, round_num: int) -> List[SideEffectEntry]:
-        return [e for e in self._entries if e.round_num == round_num]
+        return self._by_round.get(round_num, [])
 
     def has_irreversible_after(self, round_num: int) -> bool:
-        return any(
-            e.effect_type == SideEffectType.IRREVERSIBLE and e.round_num > round_num
-            for e in self._entries
-        )
+        return any(r > round_num for r in self._irreversible_rounds)
 
     def irreversible_rounds_after(self, round_num: int) -> List[int]:
-        return sorted(set(
-            e.round_num for e in self._entries
-            if e.effect_type == SideEffectType.IRREVERSIBLE and e.round_num > round_num
-        ))
+        return sorted(r for r in self._irreversible_rounds if r > round_num)
 
     def compensate_after(self, round_num: int) -> List[str]:
         compensated = []
@@ -292,6 +292,13 @@ class SideEffectJournal:
 
     def truncate_to_round(self, round_num: int):
         self._entries = [e for e in self._entries if e.round_num <= round_num]
+        # R40: rebuild indexes
+        self._by_round = {}
+        self._irreversible_rounds = set()
+        for e in self._entries:
+            self._by_round.setdefault(e.round_num, []).append(e)
+            if e.effect_type == SideEffectType.IRREVERSIBLE:
+                self._irreversible_rounds.add(e.round_num)
 
     def serialize(self) -> List[dict]:
         return [e.serialize() for e in self._entries]
@@ -299,7 +306,8 @@ class SideEffectJournal:
     @classmethod
     def deserialize(cls, data: List[dict]) -> "SideEffectJournal":
         j = cls()
-        j._entries = [SideEffectEntry.deserialize(x) for x in data]
+        for x in data:
+            j.record(SideEffectEntry.deserialize(x))  # R40: uses record() to build indexes
         return j
 
     @property
@@ -356,14 +364,14 @@ class AutoPauseEvaluator:
             if irr:
                 reason = f"critic_severity: irreversible actions={[e.tool_name for e in irr]}"
 
-        # 5. cost exceeded
+        # 5. cost exceeded (R39: 시간 비율 기반 — 실제 CostTracker 연동 TODO)
         if self._config.on_cost_threshold and not reason:
             total_dur = sum(r.duration_seconds for r in all_results)
             max_dur = len(all_results) * 60
             if max_dur > 0:
                 pct = (total_dur / max_dur) * 100
                 if pct >= self._config.cost_threshold_percent:
-                    reason = f"cost_exceeded: usage={pct:.1f}%"
+                    reason = f"time_budget_exceeded: {pct:.1f}% of estimated duration (not actual cost)"
 
         self._history.append({
             "round": current.round_num,
