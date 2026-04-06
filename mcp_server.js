@@ -22,7 +22,7 @@ function flask(path, method, body) {
     const r = http.request({
       hostname: u.hostname, port: u.port, path: u.pathname + u.search,
       method: method || "GET",
-      headers: { "Content-Type": "application/json" },
+      headers: { "Content-Type": "application/json", "X-API-Key": process.env.HORCRUX_API_KEY || "" },
       timeout: 600000
     }, (resp) => {
       let d = "";

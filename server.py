@@ -45,6 +45,32 @@ app = Flask(__name__)
 LOG_DIR = Path(__file__).parent / "logs"
 LOG_DIR.mkdir(exist_ok=True)
 
+# ── P0-004: API key 인증 미들웨어 ──
+import secrets as _secrets
+
+_HORCRUX_API_KEY = os.environ.get("HORCRUX_API_KEY", "")
+if not _HORCRUX_API_KEY:
+    _HORCRUX_API_KEY = _secrets.token_urlsafe(32)
+    os.environ["HORCRUX_API_KEY"] = _HORCRUX_API_KEY
+    # 서버 시작 시 콘솔에 출력 (아래 __main__ 블록에서)
+
+_AUTH_EXEMPT_PREFIXES = ("/api/threads", "/api/analytics", "/planning", "/")
+_AUTH_EXEMPT_METHODS = ("GET", "HEAD", "OPTIONS")
+
+
+@app.before_request
+def _check_api_key():
+    """쓰기/실행 route에 X-API-Key 헤더 검증. GET/읽기는 통과."""
+    if request.method in _AUTH_EXEMPT_METHODS:
+        return None
+    if any(request.path == p or request.path.startswith(p + "/") for p in _AUTH_EXEMPT_PREFIXES if p != "/"):
+        return None
+    if request.path == "/":
+        return None
+    key = request.headers.get("X-API-Key", "")
+    if key != _HORCRUX_API_KEY:
+        return jsonify({"error": "Unauthorized — set X-API-Key header"}), 401
+
 # R12: Gemini/Claude/Codex 모든 caller는 core.llm에서 관리
 
 # ═══════════════════════════════════════════
@@ -1752,6 +1778,7 @@ if __name__ == "__main__":
     print("\nHorcrux v8 - Adaptive Single Entry Point")
     print("  External: Auto / Fast / Standard / Full / Parallel / Deep Refactor")
     print("  Internal: adaptive_fast/standard/full, debate_loop, planning_pipeline, pair_generation, self_improve, deep_refactor")
+    print(f"\n  API Key: {_HORCRUX_API_KEY[:8]}...  (set HORCRUX_API_KEY env or use X-API-Key header)")
     print("  Unified endpoint: /api/horcrux/run → classify → auto-route")
     print()
     # Aux API 키 감지 로그

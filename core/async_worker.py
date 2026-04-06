@@ -69,7 +69,14 @@ class AsyncWorkerPool:
 
             try:
                 store.transition(item.job_id, JobStatus.RUNNING)
-                result = item.fn(*item.args, **item.kwargs)
+                # P0-002: timeout 실적용 — item.timeout 사용
+                import concurrent.futures
+                with concurrent.futures.ThreadPoolExecutor(max_workers=1) as executor:
+                    future = executor.submit(item.fn, *item.args, **item.kwargs)
+                    try:
+                        result = future.result(timeout=item.timeout)
+                    except concurrent.futures.TimeoutError:
+                        raise TimeoutError(f"Worker timeout after {item.timeout}s for job {item.job_id}")
                 store.transition(item.job_id, JobStatus.CONVERGED, result=result or {})
             except Exception as e:
                 tb = traceback.format_exc()

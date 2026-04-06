@@ -73,12 +73,20 @@ _BLOCKED_IMPORTS = re.compile(
     r"exec\s*\(|eval\s*\(|__import__|importlib)\b"
 )
 
+_CODE_EXEC_ENABLED = os.environ.get("HORCRUX_ENABLE_CODE_EXEC", "false").lower() == "true"
+
+
 def code_exec(code: str, timeout: int = 10) -> ToolResult:
     """
     샌드박스 Python 코드 실행.
-    위험한 import/함수 패턴 차단 후 subprocess 실행.
+    P0-005: 기본 비활성화 — HORCRUX_ENABLE_CODE_EXEC=true로 명시 활성화 필요.
     """
     t0 = time.monotonic()
+
+    if not _CODE_EXEC_ENABLED:
+        return ToolResult("code_exec", False,
+                          error="code_exec disabled. Set HORCRUX_ENABLE_CODE_EXEC=true to enable.",
+                          elapsed_ms=_ms(t0))
 
     # 기본 위험 패턴 차단
     if _BLOCKED_IMPORTS.search(code):

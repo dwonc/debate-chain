@@ -53,20 +53,7 @@ from .compact_memory import (
     DeltaPrompt,
     MEMORY_POLICY,
 )
-from .writer_lock import (
-    WriterLock,
-    AgentRole,
-    Permission,
-    ROLE_PERMISSIONS,
-)
-from .patch_format import (
-    PatchHunk,
-    FilePatch,
-    PatchSet,
-    parse_patch_from_llm_output,
-    merge_patch_sets,
-    PATCH_PROPOSAL_PROMPT_SUFFIX,
-)
+# P2-004: writer_lock, patch_format — 미사용, import 제거 (파일은 유지)
 from .conditional_aux import (
     should_run_aux_critics,
     AuxDecision,

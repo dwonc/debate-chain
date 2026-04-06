@@ -40,7 +40,7 @@ from core.adaptive import (
     REVISION_HARD_CAP,
     CompactMemory,
     should_run_aux_critics,
-    execute_fallback_chain, FallbackContext, FallbackAction as AdaptiveFallbackAction,
+    # P2-004: fallback_chain import 미사용 — 제거
     InteractiveSession, SessionConfig, SessionState,
     FeedbackAction as InteractiveFeedbackAction, SessionCommand, RoundResult,
 )
@@ -644,14 +644,23 @@ def _run_full(
     """
     adaptive_cfg = get_config()
     hard_cap = adaptive_cfg.revision.hard_cap
+    # P1-001: timeout 정책을 전 경로에 통합
+    total_timeout = adaptive_cfg.timeouts.generator_ms / 1000 * hard_cap * 3  # 보수적 예산
 
     modified_config = json.loads(json.dumps(config))
     modified_config["debate"]["max_rounds"] = hard_cap
 
-    print(f"  [FULL] Delegating to full debate loop (max {hard_cap} rounds)...")
+    print(f"  [FULL] Delegating to full debate loop (max {hard_cap} rounds, timeout {total_timeout:.0f}s)...")
 
     from orchestrator import run_debate
-    result = run_debate(task, modified_config)
+    import concurrent.futures
+    with concurrent.futures.ThreadPoolExecutor(max_workers=1) as pool:
+        future = pool.submit(run_debate, task, modified_config)
+        try:
+            result = future.result(timeout=total_timeout)
+        except concurrent.futures.TimeoutError:
+            print(f"  [FULL] TIMEOUT after {total_timeout:.0f}s — returning partial result")
+            result = {"converged": False, "rounds": hard_cap, "final_solution": "[TIMEOUT] Full debate exceeded time budget", "final_score": 0, "history": []}
 
     return {
         "converged": result.get("converged", False),
@@ -659,6 +668,7 @@ def _run_full(
         "final_solution": result.get("final_solution", ""),
         "final_score": result.get("final_score", 0),
         "history": result.get("history", []),
+        "timeout_budget_used": True,
     }
 
 
