@@ -462,6 +462,33 @@ def index():
     return render_template_string(HTML_TEMPLATE)
 
 
+# P3-003: Health/Ready endpoints
+@app.route("/health")
+def health():
+    return jsonify({"status": "ok", "version": "v8.3"})
+
+
+@app.route("/ready")
+def ready():
+    """서비스 준비 상태 — DB/config 로드 확인."""
+    checks = {}
+    try:
+        from core.adaptive.config import get_config
+        cfg = get_config()
+        checks["config"] = "ok"
+    except Exception as e:
+        checks["config"] = f"error: {e}"
+    try:
+        from core.job_store import get_store
+        store = get_store()
+        checks["job_store"] = "ok"
+    except Exception as e:
+        checks["job_store"] = f"error: {e}"
+    all_ok = all(v == "ok" for v in checks.values())
+    return jsonify({"ready": all_ok, "checks": checks}), 200 if all_ok else 503
+
+
+
 
 @app.route("/api/start", methods=["POST"])
 def start_debate():

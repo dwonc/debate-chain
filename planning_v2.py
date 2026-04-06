@@ -25,51 +25,30 @@ from datetime import datetime
 from pathlib import Path
 
 # ═══════════════════════════════════════════
-# Dependency Injection (server.py에서 주입)
+# P2-001: Direct imports (global injection 제거)
 # ═══════════════════════════════════════════
-_call_claude = None
-_call_codex = None
-_call_gemini = None
-_call_aux_critic = None
-_AUX_CRITIC_ENDPOINTS = None
-_extract_json = None
-_extract_score = None
-_normalize_critic = None
-_check_convergence_v2 = None
-_build_revision_focus = None
-_build_compact_context = None
-_format_issues_compact = None
-_LOG_DIR = None
+from core.llm import (
+    call_claude as _call_claude,
+    call_codex as _call_codex,
+    call_gemini as _call_gemini,
+    _call_aux_critic,
+    AUX_CRITIC_ENDPOINTS as _AUX_CRITIC_ENDPOINTS,
+)
+from core.engine.critic import (
+    extract_json as _extract_json,
+    extract_score as _extract_score,
+    normalize_critic_output as _normalize_critic,
+    check_convergence_v2 as _check_convergence_v2,
+    build_revision_focus as _build_revision_focus,
+    build_compact_context_package as _build_compact_context,
+    format_issues_compact as _format_issues_compact,
+)
+_LOG_DIR = str(Path(__file__).parent / "logs")
 
 
-def inject_callers(call_claude, call_codex, call_gemini,
-                   call_aux_critic, aux_endpoints,
-                   extract_json_fn, extract_score_fn,
-                   normalize_critic_fn, check_convergence_v2_fn,
-                   build_revision_focus_fn, build_compact_context_fn,
-                   format_issues_compact_fn,
-                   log_dir):
-    """server.py에서 호출하여 의존성 주입"""
-    global _call_claude, _call_codex, _call_gemini
-    global _call_aux_critic, _AUX_CRITIC_ENDPOINTS
-    global _extract_json, _extract_score
-    global _normalize_critic, _check_convergence_v2
-    global _build_revision_focus, _build_compact_context
-    global _format_issues_compact, _LOG_DIR
-
-    _call_claude = call_claude
-    _call_codex = call_codex
-    _call_gemini = call_gemini
-    _call_aux_critic = call_aux_critic
-    _AUX_CRITIC_ENDPOINTS = aux_endpoints
-    _extract_json = extract_json_fn
-    _extract_score = extract_score_fn
-    _normalize_critic = normalize_critic_fn
-    _check_convergence_v2 = check_convergence_v2_fn
-    _build_revision_focus = build_revision_focus_fn
-    _build_compact_context = build_compact_context_fn
-    _format_issues_compact = format_issues_compact_fn
-    _LOG_DIR = Path(log_dir)
+def inject_callers(**kwargs):
+    """P2-001: 하위 호환용 no-op. 직접 import로 대체됨."""
+    pass
 
 
 # ═══════════════════════════════════════════
