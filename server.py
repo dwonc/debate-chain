@@ -613,7 +613,8 @@ def list_threads():
                 "avg_score": d.get("avg_score", 0), "round": d.get("round", 0),
                 "created_at": d.get("created_at", ""),
             }
-        except: pass
+        except (json.JSONDecodeError, KeyError, OSError):
+            pass
     from planning_v2 import plannings as plan_v2_states
     with _state_lock:
         _all = {**debates, **pairs, **pipelines, **self_improves, **plan_v2_states, **horcrux_states, **deep_refactors}
@@ -652,7 +653,8 @@ def get_timing(job_id):
             return datetime.fromisoformat(s)
         try:
             total_sec = round((parse_dt(finished) - parse_dt(created)).total_seconds(), 1)
-        except: pass
+        except (ValueError, TypeError):
+            pass
 
     # message timestamp에서 phase별 소요시간 계산
     phases = []
@@ -664,7 +666,8 @@ def get_timing(job_id):
             try:
                 dur = round((datetime.fromisoformat(next_ts) - datetime.fromisoformat(ts)).total_seconds(), 1)
                 phases.append({"role": m["role"], "round": (i // 3) + 1, "duration_sec": dur, "ts": ts})
-            except: pass
+            except (ValueError, TypeError):
+                pass
 
     return jsonify({
         "id": job_id,
@@ -1714,88 +1717,9 @@ def horcrux_session(job_id):
     return jsonify(i_sess.to_dict())
 
 
-# ── Analytics API routes (Phase 3) ──
-
-@app.route("/api/analytics")
-def analytics_dashboard():
-    try:
-        from core.adaptive.analytics import build_analytics_dashboard
-        dashboard = build_analytics_dashboard()
-        return jsonify(dashboard.to_dict())
-    except Exception as e:
-        return jsonify({"error": str(e)}), 500
-
-
-@app.route("/api/analytics/timeouts")
-def analytics_timeouts():
-    try:
-        from core.adaptive.analytics import compute_latency_percentiles, auto_tune_timeouts
-        stats = {k: v.to_dict() for k, v in compute_latency_percentiles().items()}
-        recommendations = auto_tune_timeouts(dry_run=True)
-        return jsonify({"stats": stats, "recommendations": recommendations})
-    except Exception as e:
-        return jsonify({"error": str(e)}), 500
-
-
-@app.route("/api/analytics/timeouts/apply", methods=["POST"])
-def analytics_apply_timeouts():
-    try:
-        from core.adaptive.analytics import auto_tune_timeouts
-        applied = auto_tune_timeouts(dry_run=False)
-        return jsonify({"applied": applied, "status": "ok"})
-    except Exception as e:
-        return jsonify({"error": str(e)}), 500
-
-
-@app.route("/api/analytics/critics")
-def analytics_critics():
-    try:
-        from core.adaptive.analytics import compute_critic_reliability
-        data = {k: v.to_dict() for k, v in compute_critic_reliability().items()}
-        return jsonify(data)
-    except Exception as e:
-        return jsonify({"error": str(e)}), 500
-
-
-@app.route("/api/analytics/modes")
-def analytics_modes():
-    try:
-        from core.adaptive.analytics import compute_mode_usage_stats
-        data = {k: v.to_dict() for k, v in compute_mode_usage_stats().items()}
-        return jsonify(data)
-    except Exception as e:
-        return jsonify({"error": str(e)}), 500
-
-
-@app.route("/api/analytics/heuristic")
-def analytics_heuristic():
-    try:
-        from core.adaptive.analytics import suggest_heuristic_refinements
-        data = suggest_heuristic_refinements()
-        return jsonify(data.to_dict())
-    except Exception as e:
-        return jsonify({"error": str(e)}), 500
-
-
-@app.route("/api/analytics/scoring")
-def analytics_scoring():
-    """현재 scoring 가중치 조회 (dry_run)."""
-    try:
-        from core.adaptive.analytics import auto_tune_scoring_weights
-        return jsonify(auto_tune_scoring_weights(dry_run=True))
-    except Exception as e:
-        return jsonify({"error": str(e)}), 500
-
-
-@app.route("/api/analytics/scoring/apply", methods=["POST"])
-def analytics_scoring_apply():
-    """scoring 가중치 자동 튜닝 → config.json 저장."""
-    try:
-        from core.adaptive.analytics import auto_tune_scoring_weights
-        result = auto_tune_scoring_weights(dry_run=False)
-        return jsonify(result)
-    except Exception as e:
-        return jsonify({"error": str(e)}), 500
+# ── P2-002: Analytics routes → core/api/analytics_routes.py ──
+from core.api.analytics_routes import analytics_bp
+app.register_blueprint(analytics_bp)
 
 
 if __name__ == "__main__":

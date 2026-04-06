@@ -434,7 +434,7 @@ def _compute_phase_averages_from_logs() -> dict:
                     continue
                 try:
                     ts = datetime.fromisoformat(ts_str)
-                except:
+                except (ValueError, TypeError):
                     continue
                 if role not in role_times:
                     role_times[role] = [ts, ts]
