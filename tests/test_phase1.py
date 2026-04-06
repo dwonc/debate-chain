@@ -55,7 +55,8 @@ class TestClassifyTaskComplexity:
         assert result.recommended_mode == HorcruxMode.FULL
         assert result.confidence >= 0.75
 
-    def test_feature_add_routes_to_standard(self):
+    def test_feature_add_routes_to_full(self):
+        """v8.3: standard 폐기, feature_add → full로 라우팅."""
         result = classify_task_complexity(
             task_description="add user authentication endpoint to the API",
             task_type="code",
@@ -63,7 +64,7 @@ class TestClassifyTaskComplexity:
             estimated_scope="medium",
             risk_level="medium",
         )
-        assert result.recommended_mode == HorcruxMode.STANDARD
+        assert result.recommended_mode == HorcruxMode.FULL
 
     def test_architecture_refactor_routes_to_full(self):
         result = classify_task_complexity(
@@ -82,7 +83,7 @@ class TestClassifyTaskComplexity:
             num_files_touched=1,
             estimated_scope="small",
             risk_level="low",
-            user_mode_override="full_horcrux",
+            user_mode_override="full",
         )
         assert result.recommended_mode == HorcruxMode.FULL
         assert result.routing_source == RoutingSource.OVERRIDE
@@ -91,7 +92,8 @@ class TestClassifyTaskComplexity:
 
 class TestClassifyEdgeCases:
 
-    def test_ambiguous_task_defaults_to_standard(self):
+    def test_ambiguous_task_defaults_to_full(self):
+        """v8.3: standard 폐기, 애매한 태스크도 full로 라우팅."""
         result = classify_task_complexity(
             task_description="do something with the thing",
             task_type="code",
@@ -99,16 +101,17 @@ class TestClassifyEdgeCases:
             estimated_scope="medium",
             risk_level="medium",
         )
-        assert result.recommended_mode == HorcruxMode.STANDARD
+        assert result.recommended_mode == HorcruxMode.FULL
 
-    def test_conflicting_keywords_routes_standard(self):
+    def test_conflicting_keywords_routes_full(self):
+        """v8.3: standard 폐기, 충돌 키워드도 full로 라우팅."""
         result = classify_task_complexity(
             task_description="simple fix but also architecture refactor needed",
             task_type="code",
             num_files_touched=5,
             estimated_scope="medium",
         )
-        assert result.recommended_mode == HorcruxMode.STANDARD
+        assert result.recommended_mode == HorcruxMode.FULL
 
     def test_korean_keywords_work(self):
         result = classify_task_complexity(
