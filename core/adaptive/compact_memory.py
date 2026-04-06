@@ -280,7 +280,7 @@ class CompactMemory:
             self.working.must_not_change.append(f"[HUMAN] {directive}")
         # decision memory에 기록
         if "decision" in self._active_layers:
-            self.decision.accepted.append({
+            self.decision.accepted_decisions.append({
                 "topic": f"human_{action_type}",
                 "choice": directive,
                 "reason": f"human directive ({action_type})",

@@ -199,7 +199,7 @@ class SessionCommand:
     human_directive: str = ""
     focus_area: str = ""
     focus_depth: str = "deep"
-    rollback_to_round: int = 0
+    rollback_to_round: Optional[int] = None  # R30: None 기본값 — ROLLBACK 시 명시 필수
     new_directive: str = ""
     idempotency_key: str = field(default_factory=lambda: str(uuid.uuid4()))
 
@@ -438,8 +438,10 @@ class DirectiveInjector:
         sorted_d = sorted(directives, key=lambda d: d.priority.value, reverse=True)
         human = [d for d in sorted_d if d.priority == DirectivePriority.HUMAN]
         others = [d for d in sorted_d if d.priority != DirectivePriority.HUMAN]
+        # R33: TODO — 향후 HumanDirective에 override_critic: bool 필드 추가하여 교체
+        _OVERRIDE_KEYWORDS = ["ignore critic", "override", "무시", "대신"]
         has_override = any(
-            any(t in d.content.lower() for t in ["ignore critic", "override", "무시", "대신"])
+            any(t in d.content.lower() for t in _OVERRIDE_KEYWORDS)
             for d in human
         )
         if has_override:
@@ -581,29 +583,40 @@ class InteractiveSession:
         self.checkpoint_store = CheckpointStore(self.session_id, base_dir, config.checkpoint_retention)
         self.side_effects = SideEffectJournal()
         self.auto_pause_eval = AutoPauseEvaluator(config.auto_pause)
+        # R23: directive_injector를 __init__에서 초기화 (None 크래시 방지)
         self.directive_injector: Optional[DirectiveInjector] = None
 
         self._pause_event = threading.Event()
         self._pause_event.set()
-        self._feedback_event = threading.Event()
+        # R32: _feedback_event 제거 — 사용처 없는 dead primitive
         self._pause_reason: Optional[str] = None
         self._compact_memory = None
         self._task: str = ""
         self._thread: Optional[threading.Thread] = None
+        # R25: thread-safe 접근을 위한 lock
+        self._state_lock = threading.RLock()
         self._processed_keys: set = set()
+        self._failure_reason: Optional[str] = None  # R28: 실패 원인 보존
 
     def _transition_to(self, new_state: SessionState):
-        valid = VALID_TRANSITIONS.get(self.state, set())
-        if new_state not in valid:
-            raise InvalidStateTransition(self.state, new_state)
-        self.state = new_state
+        """R25/R26: lock-protected state transition with validation."""
+        with self._state_lock:
+            valid = VALID_TRANSITIONS.get(self.state, set())
+            if new_state not in valid:
+                raise InvalidStateTransition(self.state, new_state)
+            self.state = new_state
 
     # ─── External API ───
 
+    def bind_runtime_context(self, compact_memory=None):
+        """R23: orchestrator가 start() 없이 사용할 때 runtime context 바인딩."""
+        self._compact_memory = compact_memory
+        if compact_memory and not self.directive_injector:
+            self.directive_injector = DirectiveInjector(compact_memory)
+
     def start(self, task: str, engine_fn: Callable, compact_memory=None):
         self._task = task
-        self._compact_memory = compact_memory
-        self.directive_injector = DirectiveInjector(compact_memory)
+        self.bind_runtime_context(compact_memory)
         self._transition_to(SessionState.RUNNING)
         self._thread = threading.Thread(target=self._run_wrapper, args=(engine_fn,), daemon=True)
         self._thread.start()
@@ -622,19 +635,26 @@ class InteractiveSession:
 
         if self.state not in (SessionState.PAUSED, SessionState.AWAITING_FEEDBACK):
             if command.action == FeedbackAction.STOP:
-                self.state = SessionState.CANCELLED
+                with self._state_lock:
+                    self.state = SessionState.CANCELLED
                 self._pause_event.set()
-                self._feedback_event.set()
                 return
             return
 
         if command.action == FeedbackAction.STOP:
-            self.state = SessionState.CANCELLED
+            with self._state_lock:
+                self.state = SessionState.CANCELLED
             self._pause_event.set()
-            self._feedback_event.set()
             return
 
         if command.action == FeedbackAction.ROLLBACK:
+            # R30: rollback_to_round 필수 검증
+            if command.rollback_to_round is None:
+                raise ValueError("rollback_to_round must be specified for ROLLBACK action")
+            # R27: checkpoint 존재 확인 (pre-flight)
+            cp = self.checkpoint_store.load(command.rollback_to_round)
+            if cp is None:
+                raise ValueError(f"No checkpoint found for round {command.rollback_to_round}")
             self._do_rollback(command.rollback_to_round, command.new_directive)
             return
 
@@ -660,7 +680,6 @@ class InteractiveSession:
 
         self._transition_to(SessionState.RUNNING)
         self._pause_event.set()
-        self._feedback_event.set()
 
     def check_pause_point(self, point: str = "") -> bool:
         """Cooperative pause check — debate loop에서 호출."""
@@ -680,7 +699,8 @@ class InteractiveSession:
             self._transition_to(SessionState.PAUSED)
 
         if self.state == SessionState.PAUSED:
-            self.state = SessionState.AWAITING_FEEDBACK
+            with self._state_lock:  # R26: direct assignment → lock protected
+                self.state = SessionState.AWAITING_FEEDBACK
             self._pause_event.wait(timeout=self.config.feedback_timeout_seconds)
             if not self._pause_event.is_set():
                 # timeout → auto continue
@@ -721,12 +741,17 @@ class InteractiveSession:
     # ─── Internal ───
 
     def _run_wrapper(self, engine_fn: Callable):
+        """R28: 실패 시 traceback 보존."""
+        import traceback
         try:
             engine_fn(self)
             if self.state not in (SessionState.CANCELLED, SessionState.FAILED):
-                self.state = SessionState.COMPLETED
-        except Exception:
-            self.state = SessionState.FAILED
+                with self._state_lock:
+                    self.state = SessionState.COMPLETED
+        except Exception as e:
+            self._failure_reason = traceback.format_exc()
+            with self._state_lock:
+                self.state = SessionState.FAILED
 
     def _do_rollback(self, to_round: int, new_directive: str = ""):
         self._transition_to(SessionState.ROLLING_BACK)
@@ -759,7 +784,7 @@ class InteractiveSession:
     # ─── Serialization ───
 
     def to_dict(self) -> dict:
-        return {
+        d = {
             "session_id": self.session_id,
             "status": self.state.value,
             "current_round": self.current_round,
@@ -772,6 +797,13 @@ class InteractiveSession:
             "side_effects_summary": self.side_effects.summary,
             "auto_pause_history": self.auto_pause_eval.export_history(),
         }
+        # R28: 실패 원인 노출
+        if self._failure_reason:
+            d["failure_reason"] = self._failure_reason
+        # R41: active directives 포함
+        if self.directive_injector:
+            d["active_directives"] = self.directive_injector.export_active_directives()
+        return d
 
     def _available_actions(self) -> List[str]:
         if self.state in (SessionState.PAUSED, SessionState.AWAITING_FEEDBACK):
