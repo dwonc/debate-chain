@@ -791,6 +791,63 @@ def vision_analyze_responsive():
     return jsonify({"url": url, "color_scheme": color_scheme, "results": results})
 
 
+# ── VIS-006/007: Reference Comparison ──
+
+@app.route("/api/vision/compare", methods=["POST"])
+def vision_compare():
+    """
+    VIS-007: 레퍼런스 이미지 vs 캡처 스크린샷 비교 평가.
+
+    Body:
+        url: 캡처할 URL
+        project_dir: .horcrux/references/ 탐색할 프로젝트 경로
+        reference_name: (선택) 특정 레퍼런스 파일명
+        viewport: desktop|tablet|mobile (기본: desktop)
+    """
+    data = request.get_json(force=True)
+    url = data.get("url", "")
+    project_dir = data.get("project_dir", "")
+    if not url or not project_dir:
+        return jsonify({"error": "url and project_dir are required"}), 400
+    try:
+        validate_project_dir(project_dir)
+    except ValueError as e:
+        return jsonify({"error": str(e)}), 400
+
+    from core.vision.reference import run_comparison_critic
+    result = run_comparison_critic(
+        url=url,
+        project_dir=project_dir,
+        viewport=data.get("viewport", "desktop"),
+        color_scheme=data.get("color_scheme", "light"),
+        reference_name=data.get("reference_name"),
+    )
+    return jsonify(result)
+
+
+@app.route("/api/vision/references", methods=["POST"])
+def vision_list_references():
+    """VIS-006: 프로젝트의 레퍼런스 이미지 목록 조회."""
+    data = request.get_json(force=True)
+    project_dir = data.get("project_dir", "")
+    if not project_dir:
+        return jsonify({"error": "project_dir is required"}), 400
+    try:
+        validate_project_dir(project_dir)
+    except ValueError as e:
+        return jsonify({"error": str(e)}), 400
+
+    from core.vision.reference import load_references
+    refs = load_references(project_dir)
+    # base64 제외하고 메타만 반환
+    return jsonify([{
+        "name": r["name"],
+        "path": r["path"],
+        "mime_type": r["mime_type"],
+        "size_bytes": r["size_bytes"],
+    } for r in refs])
+
+
 @app.route("/api/test")
 def test_connections():
     results = {}
