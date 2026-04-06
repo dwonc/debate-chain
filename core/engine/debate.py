@@ -85,25 +85,31 @@ def run_multi_critic(task, solution, previously_fixed_text, vision_url="", visio
             f_vision = pool.submit(run_vision_critic, vision_url, "desktop", "light")
 
         # R21/P0-001: timeout 적용 — 무한 블로킹 제거
+        # P1-005: degraded 추적
         _CRITIC_TIMEOUT = 180  # seconds
+        _degraded_critics = []
         try:
             codex_raw = f_codex.result(timeout=_CRITIC_TIMEOUT)
         except Exception as e:
             codex_raw = f"[ERROR] Codex critic timeout/error: {e}"
+            _degraded_critics.append("Codex")
         try:
             gemini_raw = f_gemini.result(timeout=_CRITIC_TIMEOUT)
         except Exception as e:
             gemini_raw = f"[ERROR] Gemini critic timeout/error: {e}"
+            _degraded_critics.append("Gemini")
         aux_results = []
         for f in aux_futures:
             try:
                 aux_results.append(f.result(timeout=_CRITIC_TIMEOUT))
             except Exception as e:
                 aux_results.append(("aux_timeout", f"[ERROR] Aux critic timeout: {e}"))
+                _degraded_critics.append("aux")
         try:
             vision_result = f_vision.result(timeout=_CRITIC_TIMEOUT) if f_vision else None
         except Exception as e:
             vision_result = None
+            _degraded_critics.append("vision")
 
     codex_data = extract_json(codex_raw) or {}
     gemini_data = extract_json(gemini_raw) or {}
@@ -210,6 +216,9 @@ def run_multi_critic(task, solution, previously_fixed_text, vision_url="", visio
         "aux_count": len(aux_scores),
         "normalized_critics": {n["model"]: n for n in all_norms},  # v5.2+: 정규화된 critic 데이터 전체
         "vision": vision_data,  # VIS-004: vision critic 결과
+        # P1-005: degraded trace
+        "degraded": bool(_degraded_critics),
+        "degraded_critics": _degraded_critics,
     }
 
 
@@ -289,11 +298,15 @@ def run_debate(debate_id, task, threshold, max_rounds, initial_solution="", clau
 
             # ── Phase 2: Multi-Critic (Codex + Gemini 병렬) ──
             state["phase"] = "critic"
-            critic_merged = run_multi_critic(task, solution, prev_text, vision_url=vision_url, vision_mode="full_horcrux")
+            critic_merged = run_multi_critic(task, solution, prev_text, vision_url=vision_url, vision_mode="full")
             if state.get("abort"): break
 
             c_score = critic_merged["overall"]
             state["avg_score"] = c_score
+            # P1-005: degraded trace
+            if critic_merged.get("degraded"):
+                state["degraded"] = True
+                state["degraded_critics"] = critic_merged.get("degraded_critics", [])
             all_round_issues.append(critic_merged["issues"])
 
             # 표시용 포맷

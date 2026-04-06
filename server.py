@@ -139,7 +139,10 @@ from core.llm import (
 
 # ═══════════════════════════════════════════
 # DEBATE ENGINE v7 — Global State
+# P1-002: 글로벌 dict에 lock 추가 (race condition 방지)
 # ═══════════════════════════════════════════
+import threading as _threading
+_state_lock = _threading.Lock()
 debates = {}
 
 # ── R18: Debate engine → core/engine/debate.py로 추출 ──
@@ -585,7 +588,9 @@ def list_threads():
             }
         except: pass
     from planning_v2 import plannings as plan_v2_states
-    for tid, d in {**debates, **pairs, **pipelines, **self_improves, **plan_v2_states, **horcrux_states, **deep_refactors}.items():
+    with _state_lock:
+        _all = {**debates, **pairs, **pipelines, **self_improves, **plan_v2_states, **horcrux_states, **deep_refactors}
+    for tid, d in _all.items():
         threads[tid] = {
             "id": tid, "task": d.get("task", "")[:80],
             "status": d.get("status", "unknown"),
