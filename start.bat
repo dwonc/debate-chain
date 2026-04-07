@@ -76,13 +76,11 @@ echo.
 REM --- start servers ---
 echo  [6/6] Starting servers...
 
-start "Horcrux-Flask" cmd /k "cd /d D:\Custom_AI-Agent_Project\horcrux && py server.py"
+start "Horcrux-Flask" cmd /k "cd /d "%~dp0" && py server.py"
 
 ping -n 4 127.0.0.1 > nul
 
-start "Horcrux-MCP" cmd /k "cd /d D:\Custom_AI-Agent_Project\horcrux && py mcp_server.py"
-
-ping -n 3 127.0.0.1 > nul
+REM MCP는 Claude Desktop이 mcp_server.js를 직접 실행 (start.bat에서 불필요)
 
 start "" "http://localhost:5000"
 
@@ -102,5 +100,4 @@ pause > nul
 
 echo  Shutting down...
 taskkill /fi "WINDOWTITLE eq Horcrux-Flask*" /f >nul 2>&1
-taskkill /fi "WINDOWTITLE eq Horcrux-MCP*" /f >nul 2>&1
 echo  Done.
