@@ -1,5 +1,5 @@
 """
-Horcrux — Deep Refactoring Pipeline v2
+Horcrux -Deep Refactoring Pipeline v2
 
 5-Phase Multi-Model Code Refactoring:
   Phase 0: Auto-Split (file tree → Claude가 모듈 그룹 자동 분할)
@@ -153,7 +153,7 @@ Reply JSON only:
 ANALYSIS_PROMPT = """You are a {role} expert performing a deep code analysis.
 
 Task context: {task}
-Module: {group_name} — {group_description}
+Module: {group_name} -{group_description}
 
 === Full Project Structure (for cross-reference context) ===
 {file_tree}
@@ -186,7 +186,7 @@ Task context: {task}
 {all_analyses}
 
 Instructions:
-1. Merge ALL issues across ALL groups — deduplicate where same issue found in multiple modules
+1. Merge ALL issues across ALL groups -deduplicate where same issue found in multiple modules
 2. Identify CROSS-MODULE issues (coupling, circular imports, inconsistent patterns across modules)
 3. When experts disagree on severity, take the HIGHER severity
 4. Create a unified, prioritized refactoring plan covering the ENTIRE project
@@ -233,7 +233,7 @@ Instructions:
 3. Remove or fix items critics flagged as incorrect
 4. Adjust priorities based on critic feedback
 5. Keep all strengths intact
-6. Produce the COMPLETE revised plan — do not truncate
+6. Produce the COMPLETE revised plan -do not truncate
 
 Reply JSON only (same structure as the original plan, but improved):
 {{"total_issues":<count>,"modules_analyzed":<count>,"implementation_phases":[{{"phase":"<name>","description":"<what and why>","issues":[{{"id":"R<num>","category":"<cat>","severity":"<sev>","files":["<paths>"],"description":"<desc>","suggestion":"<fix>","effort":"<S|M|L>","module":"<group>","cross_module":<true|false>}}]}}],"cross_module_concerns":["issues spanning modules"],"architecture_summary":"<current + target>","estimated_total_effort":"<total>","risk_notes":["risks"],"revision_notes":["what changed from previous version"]}}"""
@@ -277,7 +277,7 @@ def run_deep_refactor(refactor_id, task, project_dir, claude_model="opus",
             groups = [{"id": "group1", "name": "entire_project", "description": "All project files", "files": [str(f.relative_to(base)).replace("\\", "/") for f in all_files]}]
             state["messages"].append({
                 "role": "system",
-                "content": f"Small project ({total_size:,} chars) — single group, no split needed",
+                "content": f"Small project ({total_size:,} chars) -single group, no split needed",
                 "ts": datetime.now().isoformat(),
             })
         else:
@@ -493,7 +493,7 @@ def run_deep_refactor(refactor_id, task, project_dir, claude_model="opus",
                 break
 
             if round_num < max_rounds:
-                state["phase_detail"] = f"Round {round_num}/{max_rounds} — revising"
+                state["phase_detail"] = f"Round {round_num}/{max_rounds} -revising"
                 critique_text = _format_critiques(critic_results)
 
                 rev_prompt = REVISION_PROMPT.format(
@@ -733,9 +733,9 @@ Now you have the ACTUAL source code of the files mentioned in each issue.
 
 ## Task
 For each issue below, verify whether it is:
-- **CONFIRMED** — the issue exists in the actual code
-- **FALSE_POSITIVE** — the issue does NOT exist (code already handles it correctly)
-- **PARTIALLY_TRUE** — the issue exists but is less severe than described
+- **CONFIRMED** -the issue exists in the actual code
+- **FALSE_POSITIVE** -the issue does NOT exist (code already handles it correctly)
+- **PARTIALLY_TRUE** -the issue exists but is less severe than described
 
 ## Issues to verify
 {issues_json}
@@ -772,7 +772,7 @@ def _verify_issues(plan_text: str, project_dir: str, state: dict, claude_model: 
     try:
         plan_json = json.loads(plan_text) if isinstance(plan_text, str) else plan_text
     except (json.JSONDecodeError, TypeError):
-        print("[DRF] Verification skipped — plan is not valid JSON")
+        print("[DRF] Verification skipped -plan is not valid JSON")
         return plan_text
 
     mentioned_files = set()
@@ -812,7 +812,7 @@ def _verify_issues(plan_text: str, project_dir: str, state: dict, claude_model: 
                 break
 
     if not source_chunks:
-        print("[DRF] Verification skipped — no mentioned files found")
+        print("[DRF] Verification skipped -no mentioned files found")
         return plan_text
 
     source_code = "\n".join(source_chunks)
@@ -841,12 +841,12 @@ def _verify_issues(plan_text: str, project_dir: str, state: dict, claude_model: 
 
     raw = _call_claude(prompt, model=claude_model)
     if not raw:
-        print("[DRF] Verification failed — Claude returned empty")
+        print("[DRF] Verification failed -Claude returned empty")
         return plan_text
 
     verified = _extract_json(raw)
     if not verified:
-        print("[DRF] Verification failed — could not parse response")
+        print("[DRF] Verification failed -could not parse response")
         return plan_text
 
     # FALSE_POSITIVE 이슈 제거
@@ -883,5 +883,5 @@ def _verify_issues(plan_text: str, project_dir: str, state: dict, claude_model: 
 
         return json.dumps(plan_json, indent=2, ensure_ascii=False)
     else:
-        print("[DRF] All issues confirmed — no false positives found")
+        print("[DRF] All issues confirmed -no false positives found")
         return plan_text
