@@ -247,7 +247,7 @@ Reply JSON only (same structure as the original plan, but improved):
 # PIPELINE
 # ═══════════════════════════════════════════
 
-def run_deep_refactor(refactor_id, task, project_dir, claude_model="opus",
+def run_deep_refactor(refactor_id, task, project_dir, claude_model="sonnet",
                       threshold=7.5, max_rounds=3):
     """5-phase deep refactoring pipeline with auto-split."""
     state = deep_refactors[refactor_id]

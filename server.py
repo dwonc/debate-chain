@@ -1775,7 +1775,7 @@ def horcrux_run():
             except ValueError as e:
                 return jsonify({"error": str(e)}), 400
             drf_id = "drf_" + datetime.now().strftime("%Y%m%d_%H%M%S_%f")[:23]
-            claude_model_resolved = data.get("claude_model", "opus")
+            claude_model_resolved = data.get("claude_model", "sonnet")
             threshold = data.get("threshold", 7.5)
             max_rounds = data.get("max_rounds", 3)
             create_drf_state(drf_id, task, project_dir)
