@@ -63,11 +63,15 @@ SKIP_DIRS = {
     "__pycache__", ".venv", "venv", "node_modules", ".git",
     "dist", "build", ".tox", ".mypy_cache", ".pytest_cache",
     "egg-info", ".eggs", "migrations",
+    ".gradle", ".idea", "target", "out", "bin", "Pods", "DerivedData",
+    ".next", ".nuxt", "coverage", "jooq/bean",
 }
 SOURCE_EXTS = {
     ".py", ".js", ".ts", ".tsx", ".jsx", ".java", ".go", ".rs",
     ".c", ".cpp", ".h", ".hpp", ".cs", ".rb", ".php",
     ".yaml", ".yml", ".toml", ".json", ".md",
+    ".kt", ".swift", ".vue", ".gradle", ".xml", ".properties",
+    ".sql", ".sh", ".bat", ".css", ".scss",
 }
 
 

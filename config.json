@@ -67,44 +67,44 @@
     "aux_weight": 0.4,
     "per_critic_weights": {
       "codex": {
-        "reliability": 0.537314859138687,
-        "weight": 1.0373148591386872,
-        "reviews": 195,
-        "avg_delta": 1.3512820512820514
+        "reliability": 0.5582175652574017,
+        "weight": 1.0582175652574017,
+        "reviews": 228,
+        "avg_delta": 1.2000000000000002
       },
       "gemini": {
-        "reliability": 0.37343947202965433,
-        "weight": 0.8734394720296543,
-        "reviews": 212,
-        "avg_delta": 2.2150943396226417
+        "reliability": 0.37781155860897075,
+        "weight": 0.8778115586089708,
+        "reviews": 230,
+        "avg_delta": 2.203913043478261
       },
       "claude": {
-        "reliability": 0.5157334400854188,
-        "weight": 1.0157334400854188,
-        "reviews": 5,
-        "avg_delta": 1.26
+        "reliability": 0.5702117446417264,
+        "weight": 1.0702117446417265,
+        "reviews": 8,
+        "avg_delta": 0.95
+      },
+      "gemini_fast": {
+        "reliability": 0.7027124344467705,
+        "weight": 1.2027124344467706,
+        "reviews": 8,
+        "avg_delta": 1.375
       },
       "groq": {
-        "reliability": 0.3300780402189365,
-        "weight": 0.8300780402189365,
-        "reviews": 61,
-        "avg_delta": 2.3081967213114756
+        "reliability": 0.347114434470146,
+        "weight": 0.847114434470146,
+        "reviews": 79,
+        "avg_delta": 2.2544303797468355
       },
       "deepseek": {
-        "reliability": 0.34332467532467525,
-        "weight": 0.8433246753246753,
-        "reviews": 77,
-        "avg_delta": 2.1389610389610394
-      },
-      "vision": {
-        "reliability": 0.5,
-        "weight": 0.8,
-        "reviews": 0,
-        "avg_delta": 0.0
+        "reliability": 0.35206901911129784,
+        "weight": 0.8520690191112978,
+        "reviews": 98,
+        "avg_delta": 2.0744897959183675
       }
     },
-    "last_tuned": "2026-03-29T22:59:26.840187",
-    "total_reviews": 550
+    "last_tuned": "2026-04-08T19:55:03.419144",
+    "total_reviews": 651
   },
   "adaptive": {
     "enabled": true,
@@ -115,12 +115,12 @@
   },
   "adaptive_horcrux": {
     "timeouts": {
-      "generator_ms": 30000,
-      "synth_ms": 25000,
-      "core_critic_ms": 25000,
-      "aux_critic_ms": 15000,
-      "revision_ms": 25000,
-      "light_critic_ms": 12000
+      "generator_ms": 120000,
+      "synth_ms": 60000,
+      "core_critic_ms": 60000,
+      "aux_critic_ms": 30000,
+      "revision_ms": 60000,
+      "light_critic_ms": 30000
     },
     "routing": {
       "llm_fallback_threshold": 0.6,

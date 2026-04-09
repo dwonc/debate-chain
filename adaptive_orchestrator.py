@@ -247,6 +247,15 @@ def _run_fast(
             break
 
     if not gen_text:
+        # 디버그: 실패 원인 출력
+        for r in gen_result.completed_results:
+            print(f"    [DEBUG] {r.task_id}: status={r.status}, error={r.error}")
+            if r.result:
+                text = r.result.text if hasattr(r.result, 'text') else str(r.result)
+                err = r.result.error if hasattr(r.result, 'error') else None
+                print(f"    [DEBUG]   text_len={len(text)}, text_preview={text[:200]}, result_error={err}")
+        for t_id in gen_result.timed_out_results:
+            print(f"    [DEBUG] TIMED_OUT: {t_id}")
         return {"converged": False, "rounds": 0, "final_solution": "",
                 "final_score": 0, "error": "generator failed"}
 
@@ -453,6 +462,15 @@ def _run_standard(
                     solutions.append((r.task_id, text))
 
         if not solutions:
+            # 디버그: 실패 원인 출력
+            for r in gen_budget.completed_results:
+                print(f"    [DEBUG] {r.task_id}: status={r.status}, error={r.error}")
+                if r.result:
+                    text = r.result.text if hasattr(r.result, 'text') else str(r.result)
+                    err = r.result.error if hasattr(r.result, 'error') else None
+                    print(f"    [DEBUG]   text_len={len(text)}, text_preview={text[:200]}, result_error={err}")
+            for t_id in gen_budget.timed_out_results:
+                print(f"    [DEBUG] TIMED_OUT: {t_id}")
             round_data["error"] = "all generators failed"
             history.append(round_data)
             _log_round(session_id, round_num, round_data)

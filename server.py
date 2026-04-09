@@ -874,27 +874,60 @@ def _read_project_files(project_dir: str, max_chars: int = 50000) -> str:
     if not base.exists():
         return ""
 
-    SOURCE_EXTS = {".py", ".js", ".ts", ".json", ".yaml", ".yml", ".toml", ".md"}
-    SKIP_DIRS = {"__pycache__", ".venv", "venv", "node_modules", ".git", "dist", "build"}
+    SOURCE_EXTS = {".py", ".js", ".ts", ".json", ".yaml", ".yml", ".toml", ".md",
+                    ".java", ".kt", ".swift", ".vue", ".jsx", ".tsx", ".go", ".rs",
+                    ".gradle", ".xml", ".properties", ".sql", ".sh", ".bat", ".css", ".scss"}
+    SKIP_DIRS = {"__pycache__", ".venv", "venv", "node_modules", ".git", "dist", "build",
+                  ".gradle", ".idea", "target", "out", "bin", "Pods", "DerivedData",
+                  ".next", ".nuxt", "coverage", "jooq/bean"}
 
     # 1순위: 설정 파일 (오진 방지 핵심)
     config_files = []
     for name in [".gitignore", ".env.example", "config.json", "requirements.txt",
-                 "package.json", "pyproject.toml", "Dockerfile", "docker-compose.yml"]:
+                 "package.json", "pyproject.toml", "Dockerfile", "docker-compose.yml",
+                 "build.gradle", "settings.gradle", "pom.xml", "application.yml",
+                 "Podfile", "Gemfile", "tsconfig.json", "vue.config.js",
+                 ".gitlab-ci.yml", ".github/workflows/ci.yml", "Makefile"]:
         cf = base / name
         if cf.exists():
             config_files.append(cf)
 
-    # 2순위: 소스 파일 (크기 순)
+    # 2순위: 소스 파일 (역할 기반 우선순위)
+    # 비즈니스 로직 파일을 우선 포함하고, 테스트/정적 파일은 후순위
+    PRIORITY_PATTERNS = {
+        # 높은 우선순위: 비즈니스 로직
+        "controller": 10, "service": 10, "dao": 10, "repository": 10,
+        "store": 9, "actions": 9, "mutations": 9, "getters": 9,
+        "router": 8, "api": 8, "util": 8, "helper": 8,
+        "component": 7, "view": 7, "page": 7,
+        # 낮은 우선순위
+        "test": 1, "spec": 1, "mock": 1,
+        "asset": 0, "static": 0, "font": 0, "image": 0,
+    }
+    SKIP_FILES = {".DS_Store", "Thumbs.db", "package-lock.json", "yarn.lock"}
+
     src_files = []
     for f in base.rglob("*"):
         if f.is_dir() or f in config_files:
+            continue
+        if f.name in SKIP_FILES:
             continue
         if any(skip in f.parts for skip in SKIP_DIRS):
             continue
         if f.suffix.lower() in SOURCE_EXTS:
             src_files.append(f)
-    src_files.sort(key=lambda f: f.stat().st_size, reverse=True)
+
+    def _file_priority(f):
+        name_lower = f.stem.lower()
+        parts_lower = str(f).lower()
+        score = 5  # 기본 점수
+        for pattern, priority in PRIORITY_PATTERNS.items():
+            if pattern in name_lower or pattern in parts_lower:
+                score = max(score, priority)
+                break
+        return (-score, f.stat().st_size)  # 우선순위 높은 것 먼저, 같으면 큰 파일 먼저
+
+    src_files.sort(key=_file_priority)
 
     chunks = []
     total = 0
@@ -915,6 +948,94 @@ def _read_project_files(project_dir: str, max_chars: int = 50000) -> str:
             continue
 
     return "\n".join(chunks)
+
+
+def _read_specific_files(project_dir: str, file_paths: list, max_chars: int = 30000) -> str:
+    """분석 결과에서 언급된 특정 파일들만 읽어서 반환."""
+    base = Path(project_dir)
+    if not base.exists():
+        return ""
+
+    chunks = []
+    total = 0
+    for rel_path in file_paths:
+        f = base / rel_path
+        if not f.exists() or not f.is_file():
+            continue
+        try:
+            content = f.read_text(encoding="utf-8", errors="replace")
+            entry = f"\n### {rel_path}\n{content}"
+            if total + len(entry) > max_chars:
+                remain = max_chars - total - 100
+                if remain > 500:
+                    chunks.append(f"\n### {rel_path}\n{content[:remain]}\n[...truncated]")
+                break
+            chunks.append(entry)
+            total += len(entry)
+        except Exception:
+            continue
+    return "\n".join(chunks)
+
+
+def _extract_file_paths_from_solution(solution: str) -> list:
+    """분석 결과 텍스트에서 파일 경로 추출."""
+    import re
+    paths = set()
+    # JSON 형태: "files": ["path1", "path2"]
+    for m in re.finditer(r'"files"\s*:\s*\[([^\]]+)\]', solution):
+        for p in re.findall(r'"([^"]+)"', m.group(1)):
+            if '.' in p and not p.startswith('http'):
+                paths.add(p)
+    # 마크다운 형태: `path/to/file.ext`
+    for m in re.finditer(r'`([^`]+\.[a-zA-Z]{1,10})`', solution):
+        p = m.group(1)
+        if '/' in p or '\\' in p:
+            paths.add(p)
+    # ### path/to/file 형태
+    for m in re.finditer(r'###?\s+(\S+\.[a-zA-Z]{1,10})', solution):
+        paths.add(m.group(1))
+    return list(paths)
+
+
+def _verify_analysis(solution: str, project_dir: str) -> str:
+    """
+    2단계 검증: 분석 결과에서 언급된 파일들을 실제로 읽고,
+    각 이슈가 진짜인지 검증.
+    """
+    if not solution or not project_dir:
+        return solution
+
+    file_paths = _extract_file_paths_from_solution(solution)
+    if not file_paths:
+        return solution
+
+    # 언급된 파일들의 실제 코드 읽기
+    verification_code = _read_specific_files(project_dir, file_paths, max_chars=30000)
+    if not verification_code:
+        return solution
+
+    from core.llm.callers import call_claude
+    verify_prompt = (
+        f"아래는 코드 분석 결과와, 해당 분석에서 언급된 실제 소스 코드이다.\n\n"
+        f"=== 분석 결과 ===\n{solution[:15000]}\n\n"
+        f"=== 실제 소스 코드 ===\n{verification_code}\n\n"
+        f"=== 검증 지시 ===\n"
+        f"위 분석 결과의 각 이슈를 실제 코드와 대조하여:\n"
+        f"1. 실제 코드에서 확인된 이슈 → [CONFIRMED] 태그\n"
+        f"2. 코드에 존재하지 않거나 잘못된 진단 → [FALSE_POSITIVE] 태그 + 이유\n"
+        f"3. 코드가 제공되지 않아 확인 불가 → [UNVERIFIED] 태그\n\n"
+        f"원본 분석 결과의 구조를 유지하되, 각 이슈 앞에 검증 태그를 추가하고,\n"
+        f"FALSE_POSITIVE인 항목은 제거하거나 취소선 처리해서 최종 검증 결과를 출력하라."
+    )
+
+    try:
+        verified = call_claude(verify_prompt, timeout=120)
+        if verified and not verified.startswith("[ERROR]"):
+            return verified
+    except Exception:
+        pass
+
+    return solution
 
 
 # ── Pair ──
@@ -1306,7 +1427,7 @@ let cid=null,pt=null,lmc=0,run=false,curMode='auto';
 function autoGrow(el){el.style.height='auto';el.style.height=Math.min(el.scrollHeight,120)+'px'}
 document.getElementById("taskInput").addEventListener("keydown",e=>{if(e.key==="Enter"&&!e.shiftKey){e.preventDefault();startRun()}});
 async function testConnections(){const el=$('testResult');el.innerHTML='Testing...';try{const r=await fetch("/api/test");const d=await r.json();el.innerHTML=Object.entries(d).map(([k,v])=>{const c=v.ok?'#69db7c':'#ff6b6b';return `<div style="color:${c};margin:6px 0;padding:8px;background:${c}11;border:1px solid ${c}33;border-radius:6px"><b>${v.ok?'OK':'FAIL'} ${k} ${v.json?'JSON ok':'no JSON'}</b></div>`}).join('')}catch(e){el.innerHTML=`<span style="color:#ff6b6b">${e.message}</span>`}}
-async function loadThreads(){const r=await fetch("/api/threads");const t=await r.json();const el=$('threadList');if(!t.length){el.innerHTML='<div style="padding:20px;text-align:center;color:#444;font-size:12px">No tasks yet</div>';return}el.innerHTML=t.map(t=>{const a=t.id===cid?'active':'';const sc=t.avg_score>=THRESHOLD?'#69db7c':t.avg_score>0?'#ff6b6b':'#666';const tm=t.created_at?new Date(t.created_at).toLocaleString('ko-KR',{month:'short',day:'numeric',hour:'2-digit',minute:'2-digit'}):'';return `<div class="thread-item ${a}" onclick="selectThread('${t.id}')"><div class="thread-task">${esc(t.task)}</div><div class="thread-meta"><span class="thread-status ${t.status}"></span><span>${t.status}</span><span>R${t.round}</span><span class="thread-score" style="color:${sc}">${t.avg_score>0?t.avg_score.toFixed(1):'-'}</span><span style="margin-left:auto;color:#555">${tm}</span><span class="thread-delete" onclick="event.stopPropagation();deleteThread('${t.id}')">x</span></div></div>`}).join('')}
+async function loadThreads(){try{const r=await fetch("/api/threads");const t=await r.json();const el=$('threadList');if(!t.length){el.innerHTML='<div style="padding:20px;text-align:center;color:#444;font-size:12px">No tasks yet</div>';return}const typeBadge=(id)=>{if(id.startsWith('drf_'))return'<span style="font-size:9px;padding:1px 4px;border-radius:3px;background:#da77f222;color:#da77f2;border:1px solid #da77f255;margin-right:4px">DRF</span>';if(id.startsWith('plan_'))return'<span style="font-size:9px;padding:1px 4px;border-radius:3px;background:#58a6ff22;color:#58a6ff;border:1px solid #58a6ff55;margin-right:4px">PLAN</span>';if(id.startsWith('pair_'))return'<span style="font-size:9px;padding:1px 4px;border-radius:3px;background:#388bfd22;color:#388bfd;border:1px solid #388bfd55;margin-right:4px">PAIR</span>';if(id.startsWith('dp_'))return'<span style="font-size:9px;padding:1px 4px;border-radius:3px;background:#ffd43b22;color:#ffd43b;border:1px solid #ffd43b55;margin-right:4px">PIPE</span>';if(id.startsWith('si_'))return'<span style="font-size:9px;padding:1px 4px;border-radius:3px;background:#3fb95022;color:#3fb950;border:1px solid #3fb95055;margin-right:4px">SI</span>';if(id.startsWith('hrx_')||id.startsWith('adp_'))return'<span style="font-size:9px;padding:1px 4px;border-radius:3px;background:#00e5ff22;color:#00e5ff;border:1px solid #00e5ff55;margin-right:4px">HRX</span>';return''};el.innerHTML=t.map(t=>{const a=t.id===cid?'active':'';const sc=t.avg_score>=THRESHOLD?'#69db7c':t.avg_score>0?'#ff6b6b':'#666';const tm=t.created_at?new Date(t.created_at).toLocaleString('ko-KR',{month:'short',day:'numeric',hour:'2-digit',minute:'2-digit'}):'';return `<div class="thread-item ${a}" onclick="selectThread('${t.id}')"><div class="thread-task">${typeBadge(t.id)}${esc(t.task)}</div><div class="thread-meta"><span class="thread-status ${t.status}"></span><span>${t.status}</span><span>R${t.round}</span><span class="thread-score" style="color:${sc}">${t.avg_score>0?t.avg_score.toFixed(1):'-'}</span><span style="margin-left:auto;color:#555">${tm}</span><span class="thread-delete" onclick="event.stopPropagation();deleteThread('${t.id}')">x</span></div></div>`}).join('')}catch(e){console.error('loadThreads error:',e);$('threadList').innerHTML='<div style="padding:20px;text-align:center;color:#ff6b6b;font-size:12px">Thread list error: '+e.message+'</div>'}}
 function statusUrl(id){if(id.startsWith('plan_'))return`/api/planning/status/${id}`;if(id.startsWith('pair_'))return`/api/pair/status/${id}`;if(id.startsWith('dp_'))return`/api/pipeline/status/${id}`;if(id.startsWith('si_'))return`/api/self_improve/status/${id}`;if(id.startsWith('drf_'))return`/api/horcrux/status/${id}`;if(id.startsWith('hrx_'))return`/api/horcrux/status/${id}`;if(id.startsWith('adp_'))return`/api/horcrux/status/${id}`;return`/api/status/${id}`}
 function resultUrl(id){if(id.startsWith('plan_'))return`/api/planning/result/${id}`;if(id.startsWith('pair_'))return`/api/pair/result/${id}`;if(id.startsWith('dp_'))return`/api/pipeline/result/${id}`;if(id.startsWith('si_'))return`/api/self_improve/result/${id}`;if(id.startsWith('drf_'))return`/api/horcrux/result/${id}`;if(id.startsWith('hrx_'))return`/api/horcrux/result/${id}`;if(id.startsWith('adp_'))return`/api/horcrux/result/${id}`;return`/api/result/${id}`}
 async function selectThread(id){if(pt)clearInterval(pt);cid=id;lmc=0;$('messages').innerHTML='';$('resultArea').innerHTML='';$('emptyState').style.display='none';
@@ -1450,6 +1571,15 @@ def horcrux_run():
         mode = "full"
     intent = classification.detected_intent.value
 
+    # project_dir 추출 및 검증
+    project_dir = data.get("project_dir", "")
+    if project_dir:
+        try:
+            validate_project_dir(project_dir)
+        except Exception as e:
+            print(f"[WARN] project_dir validation failed: {e} — reading files anyway")
+            # 검증 실패해도 경로가 존재하면 읽기 시도
+
     # ── 동기 엔진: adaptive_fast / adaptive_standard / adaptive_full ──
     if engine.startswith("adaptive_"):
         try:
@@ -1460,8 +1590,26 @@ def horcrux_run():
                 "adaptive_standard": "standard",
                 "adaptive_full": "full_horcrux",
             }
+            # project_dir이 있으면 코드를 읽어서 task에 주입
+            adaptive_task = task
+            if project_dir:
+                project_code = _read_project_files(project_dir, max_chars=25000)
+                if project_code:
+                    adaptive_task = (
+                        f"{task}\n\n"
+                        f"=== 분석 가드레일 ===\n"
+                        f"- 아래 제공된 코드에서 직접 확인한 이슈만 보고할 것\n"
+                        f"- 코드에서 확인 불가능한 추정은 [추정]으로 명시할 것\n"
+                        f"- 각 이슈에 반드시 해당 파일명과 실제 코드 인용을 포함할 것\n"
+                        f"- 코드를 직접 인용하지 못하면 이슈로 보고하지 말 것\n"
+                        f"- severity는 confirmed(코드에서 확인됨) / suspected(패턴상 추정) 중 하나를 추가 표기할 것\n"
+                        f"=== 프로젝트 코드 ({project_dir}) ===\n"
+                        f"{project_code}\n"
+                        f"=== 위 코드를 기반으로 분석하라 ==="
+                    )
+
             result = run_adaptive(
-                task=task,
+                task=adaptive_task,
                 mode_override=orch_mode_map.get(engine),
                 task_type=data.get("task_type", "code"),
                 num_files=data.get("num_files", 1),
@@ -1470,9 +1618,16 @@ def horcrux_run():
                 artifact_type=data.get("artifact_type", "none"),
                 interactive=data.get("interactive", "batch"),
             )
+            # 2단계 검증: project_dir이 있으면 언급된 파일을 다시 읽고 검증
+            solution_text = result.get("final_solution", "")
+            if project_dir and solution_text:
+                print(f"  [VERIFY] 2단계 검증 시작...")
+                solution_text = _verify_analysis(solution_text, project_dir)
+                result["final_solution"] = solution_text
+                print(f"  [VERIFY] 검증 완료 ({len(solution_text)} chars)")
+
             # BUG-2 fix: 동기 응답에도 job_id 생성 → check()로 조회 가능
             sync_id = "hrx_" + datetime.now().strftime("%Y%m%d_%H%M%S")
-            solution_text = result.get("final_solution", "")
             horcrux_states[sync_id] = {
                 "id": sync_id, "task": task, "status": "completed",
                 "phase": "completed",
@@ -1510,6 +1665,8 @@ def horcrux_run():
                 },
             })
         except Exception as e:
+            import traceback
+            traceback.print_exc()
             return jsonify({"error": str(e)}), 500
 
     # ── 비동기 엔진: planning_pipeline (직접 호출, self-HTTP 제거) ──
