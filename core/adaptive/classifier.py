@@ -445,7 +445,6 @@ def classify_task_complexity(
                 HorcruxMode.FAST: InternalEngine.ADAPTIVE_FAST,
                 HorcruxMode.STANDARD: InternalEngine.ADAPTIVE_STANDARD,
                 HorcruxMode.FULL: InternalEngine.ADAPTIVE_FULL,
-                HorcruxMode.FULL: InternalEngine.ADAPTIVE_FULL,
             }
             engine = _mode_to_engine.get(mode, InternalEngine.ADAPTIVE_STANDARD)
 
@@ -551,6 +550,13 @@ def apply_sonnet_compensation(
     is_sonnet = claude_model.lower() in ("sonnet", "claude-sonnet-4-6")
     if not is_sonnet:
         return result
+
+    # P1 fix: 입력 객체 변이 방지 — 복사본에서 수정
+    from dataclasses import replace as _dc_replace
+    try:
+        result = _dc_replace(result)
+    except TypeError:
+        pass  # dataclass가 아니면 원본 수정 (기존 동작 유지)
 
     # 난이도 추정: intent + scope + risk 기반
     is_hard = (

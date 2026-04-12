@@ -192,9 +192,9 @@ def run_adaptive(
     print(f"  Log: {result_file}")
     print(f"{'='*60}\n")
 
-    # 자동 scoring 가중치 튜닝
+    # 자동 scoring 가중치 튜닝 (P1 fix: server 순환 의존 제거 → core.engine 직접 import)
     try:
-        from server import _maybe_auto_tune_scoring
+        from core.engine import _maybe_auto_tune_scoring
         _maybe_auto_tune_scoring()
     except ImportError:
         pass
@@ -274,8 +274,8 @@ def _run_fast(
 
     light_timeout_ms = adaptive_cfg.timeouts.light_critic_ms
 
-    # Gemini Flash-Lite 병렬 호출 (server.py의 call_gemini_fast 사용)
-    from server import call_gemini_fast
+    # Gemini Flash-Lite 병렬 호출 (P1 fix: server 순환 의존 제거 → core.llm 직접 import)
+    from core.llm import call_gemini_fast
     import concurrent.futures
 
     def _gemini_fast_light_critic():
@@ -496,8 +496,10 @@ def _run_standard(
             solution_truncated=_truncate(current_solution, 8000),
         )
 
-        critic_model = codex if solutions[0][0] == "claude" else claude
-        critic_name = "codex" if solutions[0][0] == "claude" else "claude"
+        # P0 fix: best 기준으로 critic 선택 (solutions[0] 기준이면 자기비평 가능)
+        selected_author = best[0] if len(solutions) > 1 else solutions[0][0]
+        critic_model = codex if selected_author == "claude" else claude
+        critic_name = "codex" if selected_author == "claude" else "claude"
         critic_timeout_ms = adaptive_cfg.timeouts.core_critic_ms
 
         print(f"    [3] Core Critic ({critic_name})...")
