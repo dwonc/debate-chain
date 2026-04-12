@@ -30,8 +30,8 @@ from typing import Dict, List, Optional, Tuple
 
 from core.provider import (
     ProviderBackend, ProviderResponse,
-    ClaudeCLIBackend, CodexCLIBackend, OpenSourceAPIBackend,
-    invoke_parallel, make_core_pair, make_auxiliary,
+    ClaudeCLIBackend, CodexCLIBackend, GeminiCLIBackend, OpenSourceAPIBackend,
+    invoke_parallel, make_core_pair, make_core_trio, make_auxiliary,
 )
 
 
@@ -123,18 +123,31 @@ def run_debate(task: str, config: dict = None) -> dict:
 
     # Provider 초기화
     print(f"\n{'='*60}")
-    print(f"  Horcrux v5 — 2-Pair Core + Open Source Hybrid")
+    print(f"  Horcrux v6 — Core Trio (Claude+Codex+Gemini) + Aux Hybrid")
     print(f"{'='*60}")
     print(f"  Task: {task[:100]}...")
     print(f"  Threshold: {threshold} | Max Rounds: {max_rounds}")
     print(f"  Session: {session_id}")
-    print(f"\n  [Core Pair]")
+    print(f"\n  [Core Trio]")
 
-    core = make_core_pair()
-    claude: ProviderBackend = core["claude"]
+    core = make_core_trio()
+    claude_gen: ProviderBackend = core["claude_gen"]    # Opus — 생성/개선
+    claude_crit: ProviderBackend = core["claude_crit"]  # Sonnet — 비평/심판
     codex: ProviderBackend = core["codex"]
-    print(f"    A: Claude Opus 4.6 (CLI) — Generator/Judge")
-    print(f"    B: Codex 5.4 (CLI) — Counter-Generator/Critic")
+    gemini: ProviderBackend = core["gemini"]
+    print(f"    A: Claude Opus 4.6 (CLI) — Generator/Synthesizer")
+    print(f"    A': Claude Sonnet 4.6 (CLI) — Critic/Judge (비용 최적화)")
+    print(f"    B: Codex 5.4 (CLI) — Generator/Critic/Judge")
+    print(f"    C: Gemini 3.1 Pro (CLI) — Generator/Critic/Judge")
+
+    # 3-pair 라운드 로빈 스케줄
+    # Generator는 Opus/full 모델, Critic/Judge는 Sonnet/경량 모델
+    _trio_schedule = [
+        # (generator, [critic1, critic2], judge, names)
+        (claude_gen, [codex, gemini], gemini, ("Claude(Opus)", "Codex", "Gemini")),
+        (codex, [claude_crit, gemini], claude_crit, ("Codex", "Claude(Sonnet)", "Gemini")),
+        (gemini, [claude_crit, codex], codex, ("Gemini", "Claude(Sonnet)", "Codex")),
+    ]
 
     print(f"\n  [Auxiliary — Free API]")
     aux_backends = make_auxiliary(config)
@@ -157,18 +170,21 @@ def run_debate(task: str, config: dict = None) -> dict:
         round_data = {"task": task}
 
         # ═══ Step 1: Generator ═══
-        # 홀수 라운드: Claude generates, 짝수 라운드: Codex generates
-        if round_num % 2 == 1:
-            generator, critic_core = claude, codex
-            gen_name, crit_name = "Claude", "Codex"
-        else:
-            generator, critic_core = codex, claude
-            gen_name, crit_name = "Codex", "Claude"
+        # 3-pair 라운드 로빈: Claude → Codex → Gemini → Claude → ...
+        schedule_idx = (round_num - 1) % len(_trio_schedule)
+        generator, core_critics, judge_model, names = _trio_schedule[schedule_idx]
+        gen_name = names[0]
+        crit_names = [names[1], names[2]]
+        # 첫 번째 critic을 메인 critic으로 사용 (점수 계산 기준)
+        critic_core = core_critics[0]
+        crit_name = crit_names[0]
 
         if round_num == 1:
             gen_prompt = (
                 f"You are an expert developer. Solve this task thoroughly.\n"
-                f"Provide complete, production-ready code with explanations.\n\n"
+                f"Provide complete, production-ready output with explanations.\n"
+                f"IMPORTANT: NEVER truncate or cut off your response. If the output is long, complete it fully.\n"
+                f"Do NOT use '...' or '[truncated]' or skip sections. Write everything to completion.\n\n"
                 f"Task:\n{task}"
             )
         else:
@@ -219,26 +235,34 @@ def run_debate(task: str, config: dict = None) -> dict:
             f"Solution by {gen_name}:\n{solution_for_review}"
         )
 
-        # Core Critic (상대 모델)
-        print(f"  [2] Core Critic ({crit_name})...", end="", flush=True)
+        # Core Critics (2개 모델 병렬) + Auxiliary Critics
+        print(f"  [2] Core Critics ({crit_names[0]}+{crit_names[1]})...", end="", flush=True)
 
-        # Auxiliary Critics (병렬)
         aux_responses: List[ProviderResponse] = []
+        # Core 2개 + Aux 모두 병렬 실행
+        all_critics = core_critics[:]  # [critic1, critic2]
         if parallel_critics and aux_backends:
             print(f" + {len(aux_backends)} aux...", end="", flush=True)
-            # Core + Aux 모두 병렬 실행
-            all_critics = [critic_core] + aux_backends
-            all_responses = invoke_parallel(all_critics, critic_prompt, timeout)
-            core_critic_resp = all_responses[0]
-            aux_responses = all_responses[1:]
-        else:
-            core_critic_resp = critic_core.invoke(critic_prompt, timeout)
+            all_critics += aux_backends
+        all_responses = invoke_parallel(all_critics, critic_prompt, timeout)
 
+        # Core critic 1 (메인)
+        core_critic_resp = all_responses[0]
         core_critic_score = parse_score(core_critic_resp.text)
         round_data["core_critic"] = core_critic_resp.text
         round_data["core_critic_score"] = core_critic_score
         round_data["core_critic_latency_ms"] = core_critic_resp.latency_ms
-        print(f"\n      → Core: {core_critic_score}/10 ({core_critic_resp.latency_ms}ms)")
+        print(f"\n      → Core[{crit_names[0]}]: {core_critic_score}/10 ({core_critic_resp.latency_ms}ms)")
+
+        # Core critic 2 (세컨드)
+        core_critic2_resp = all_responses[1]
+        core_critic2_score = parse_score(core_critic2_resp.text)
+        round_data["core_critic2"] = core_critic2_resp.text
+        round_data["core_critic2_score"] = core_critic2_score
+        print(f"      → Core[{crit_names[1]}]: {core_critic2_score}/10 ({core_critic2_resp.latency_ms}ms)")
+
+        # Aux responses (index 2부터)
+        aux_responses = all_responses[2:]
 
         # Aux scores
         aux_scores = []
@@ -256,12 +280,14 @@ def run_debate(task: str, config: dict = None) -> dict:
         round_data["aux_scores"] = aux_scores
         round_data["aux_critics_merged"] = "\n---\n".join(aux_texts) if aux_texts else ""
 
-        # ═══ Step 3: 점수 계산 ═══
+        # ═══ Step 3: 점수 계산 (Core Trio 가중 평균) ═══
+        # Core1 40% + Core2 40% + Aux avg 20%
+        core_avg = (core_critic_score + core_critic2_score) / 2
         if aux_scores and aux_as_tiebreaker:
             aux_avg = sum(aux_scores) / len(aux_scores)
-            weighted_score = (core_critic_score * core_weight) + (aux_avg * aux_weight)
+            weighted_score = (core_avg * 0.8) + (aux_avg * 0.2)
         else:
-            weighted_score = core_critic_score
+            weighted_score = core_avg
 
         round_data["weighted_score"] = round(weighted_score, 2)
         print(f"      → Weighted Score: {weighted_score:.2f}/10")
@@ -275,20 +301,23 @@ def run_debate(task: str, config: dict = None) -> dict:
             history.append(round_data)
             break
 
-        # ═══ Step 5: Judge (Generator의 반대편이 판정) ═══
-        judge = critic_core  # Critic이 Judge도 겸임
+        # ═══ Step 5: Judge (Generator도 Critic도 아닌 제3 모델이 판정) ═══
+        judge_name = names[2]  # 라운드 로빈에서 judge 역할 모델명
         judge_prompt = (
-            f"As an impartial judge, summarize the key issues found by all critics.\n"
-            f"Prioritize the top 3 most impactful improvements needed.\n"
-            f"Be concise and actionable.\n\n"
-            f"Solution:\n{_truncate(gen_response.text, 6000)}\n\n"
-            f"Core Critic ({core_critic_score}/10):\n{_truncate(core_critic_resp.text, 3000)}\n\n"
+            f"As an impartial judge, evaluate the solution quality.\n"
+            f"You did NOT generate or critique this solution — you are a neutral third party.\n"
+            f"1. List the top 3 most impactful issues found by critics.\n"
+            f"2. Acknowledge what the solution does well.\n"
+            f"3. Give your final verdict: Score: X/10 (be fair — 5=average, 7=good, 9=excellent)\n\n"
+            f"Solution by {gen_name}:\n{_truncate(gen_response.text, 6000)}\n\n"
+            f"Critic [{crit_names[0]}] ({core_critic_score}/10):\n{_truncate(core_critic_resp.text, 3000)}\n\n"
+            f"Critic [{crit_names[1]}] ({core_critic2_score}/10):\n{_truncate(core_critic2_resp.text, 3000)}\n\n"
         )
         if aux_texts:
             judge_prompt += f"Auxiliary Critics:\n{_truncate(round_data['aux_critics_merged'], 2000)}\n\n"
 
-        print(f"  [3] Judge ({crit_name})...")
-        judge_resp = judge.invoke(judge_prompt, timeout)
+        print(f"  [3] Judge ({judge_name})...")
+        judge_resp = judge_model.invoke(judge_prompt, timeout)
         judge_score = parse_score(judge_resp.text)
         round_data["judge_feedback"] = judge_resp.text
         round_data["judge_score"] = judge_score
@@ -300,9 +329,11 @@ def run_debate(task: str, config: dict = None) -> dict:
             f"Focus on the judge's top priorities.\n\n"
             f"Original task: {task}\n\n"
             f"Your solution:\n{_truncate(gen_response.text, max_prompt // 2)}\n\n"
-            f"Judge's priorities:\n{_truncate(judge_resp.text, 4000)}\n\n"
-            f"Core Critic:\n{_truncate(core_critic_resp.text, 3000)}\n\n"
-            f"Create an improved, complete solution."
+            f"Judge ({judge_name})'s priorities:\n{_truncate(judge_resp.text, 4000)}\n\n"
+            f"Critic [{crit_names[0]}]:\n{_truncate(core_critic_resp.text, 2500)}\n\n"
+            f"Critic [{crit_names[1]}]:\n{_truncate(core_critic2_resp.text, 2500)}\n\n"
+            f"Create an improved, complete solution.\n"
+            f"IMPORTANT: NEVER truncate your output. Complete every section, table, and chart fully."
         )
 
         print(f"  [4] Synthesizer ({gen_name})...")

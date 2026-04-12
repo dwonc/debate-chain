@@ -517,19 +517,23 @@ def start_debate():
                 parent_task = parent.get("task", "")
                 task = task or parent_task
     # project_dir 지정 시 프로젝트 코드를 읽어 task에 context로 첨부 (R06: 경로 검증)
+    # P3: 2-Stage Smart Reader — LLM이 핵심 파일을 선별하여 깊이 읽기
     project_dir = data.get("project_dir", "")
     if project_dir:
+        print(f"\n  ★★★ PROJECT_DIR DETECTED: {project_dir} ★★★", flush=True)
         try:
             validate_project_dir(project_dir)
         except ValueError as e:
             return jsonify({"error": str(e)}), 400
-        project_code = _read_project_files(project_dir)
+        print(f"  ★★★ CALLING SMART READER ★★★", flush=True)
+        project_code = _read_project_smart(project_dir, task)
+        print(f"  ★★★ SMART READER RETURNED {len(project_code)} chars ★★★", flush=True)
         if project_code:
             task = (
                 f"{task}\n\n"
                 f"=== 현재 프로젝트 코드 ({project_dir}) ===\n"
                 f"{project_code}\n"
-                f"=== 위 코드를 분석하여 \uace0도화 포인트를 판단하라 ==="
+                f"=== 위 코드를 기반으로 confirmed 이슈만 보고하라. 읽지 않은 파일에 대해서는 suspected로 표기하라 ==="
             )
 
     debates[debate_id] = {
@@ -947,6 +951,228 @@ def _read_project_files(project_dir: str, max_chars: int = 50000) -> str:
         except Exception:
             continue
 
+    return "\n".join(chunks)
+
+
+# ═══════════════════════════════════════════
+# 2-Stage Smart Project Reader (P3: 코드 전체 읽기 한계 해결)
+# Stage 1: 파일 트리 + 설정파일 → LLM에게 핵심 파일 선별 요청
+# Stage 2: 선별된 파일만 깊이 읽기 → 분석 컨텍스트 구성
+# ═══════════════════════════════════════════
+
+def _build_file_tree_with_configs(project_dir: str, config_max: int = 15000) -> tuple:
+    """
+    Stage 1: 파일 트리 전체 + 설정 파일 내용만 읽기.
+    Returns: (file_tree_str, config_content, all_source_files)
+    """
+    base = Path(project_dir)
+    if not base.exists():
+        return "", "", []
+
+    SOURCE_EXTS = {".py", ".js", ".ts", ".json", ".yaml", ".yml", ".toml",
+                   ".java", ".kt", ".swift", ".vue", ".jsx", ".tsx", ".go", ".rs",
+                   ".gradle", ".xml", ".properties", ".sql", ".sh", ".css", ".scss"}
+    SKIP_DIRS = {"__pycache__", ".venv", "venv", "node_modules", ".git", "dist", "build",
+                 ".gradle", ".idea", "target", "out", "bin", "Pods", "DerivedData",
+                 ".next", ".nuxt", "coverage", "jooq/bean"}
+    CONFIG_NAMES = {".gitignore", ".env.example", "config.json", "package.json",
+                    "build.gradle", "settings.gradle", "pom.xml", "application.yml",
+                    "application.yaml", "Dockerfile", "docker-compose.yml",
+                    ".gitlab-ci.yml", "Podfile", "tsconfig.json", "vue.config.js",
+                    "Makefile", "requirements.txt", "pyproject.toml"}
+
+    all_files = []
+    tree_lines = []
+    config_chunks = []
+    config_total = 0
+
+    for f in sorted(base.rglob("*")):
+        if f.is_dir():
+            continue
+        if any(skip in f.parts for skip in SKIP_DIRS):
+            continue
+        if f.suffix.lower() not in SOURCE_EXTS:
+            continue
+        all_files.append(f)
+
+        rel = str(f.relative_to(base)).replace("\\", "/")
+        size = f.stat().st_size
+        tree_lines.append(f"  {rel} ({size:,}B)")
+
+        # 설정 파일은 내용도 읽기
+        if f.name in CONFIG_NAMES and config_total < config_max:
+            try:
+                content = f.read_text(encoding="utf-8", errors="replace")
+                entry = f"\n### {rel}\n{content}"
+                if config_total + len(entry) <= config_max:
+                    config_chunks.append(entry)
+                    config_total += len(entry)
+            except Exception:
+                pass
+
+    file_tree = f"Project: {base.name}/ ({len(all_files)} files)\n" + "\n".join(tree_lines)
+    config_content = "\n".join(config_chunks)
+
+    return file_tree, config_content, all_files
+
+
+def _ask_llm_for_key_files(task: str, file_tree: str, config_content: str) -> list:
+    """
+    Stage 1.5: LLM에게 파일 트리를 보여주고 핵심 파일 경로를 선별하게 함.
+    Returns: list of relative file paths (최대 30개)
+    """
+    prompt = f"""You are a code analysis planner. Given a task and a project's file tree, select the most important files to read for deep analysis.
+
+TASK: {task[:500]}
+
+=== FILE TREE ===
+{file_tree[:8000]}
+
+=== CONFIG FILES (already read) ===
+{config_content[:3000]}
+
+RULES:
+1. Select 25-30 files most relevant to the task
+2. CRITICAL PRIORITY ORDER by project type:
+
+   [Java/Spring Backend]
+   - Service implementations (business logic, @Transactional) — MUST include 5+ files
+   - DAO/Repository implementations (SQL queries, jOOQ DSL, data access) — MUST include 5+ files
+   - Controller implementations (REST endpoints, request handling) — include 3+ files
+   - Config/Security classes (SecurityConfig, WebConfig, interceptors) — include if exists
+   - Base/Abstract classes (BaseService, BaseDao, BaseController) — ALWAYS include
+
+   [Vue.js/React Frontend]
+   - .vue/.jsx/.tsx component files (especially LARGE ones >200 lines) — MUST include 8+ files
+   - Store/State files (Vuex store, actions, mutations, getters) — MUST include 5+ files
+   - Router files (index.js, route modules) — include 2+ files
+   - API/HTTP layer (ServiceExec, axios wrapper, apiList) — MUST include
+   - Utility/Common files (Util.js, helpers) — include 2+ files
+   - NEVER select only package.json/config — MUST read actual .vue and .js source
+
+   [iOS/Swift]
+   - ViewController implementations (especially largest ones) — MUST include 5+ files
+   - Manager/Service classes — include 3+ files
+   - Network/API layer — include if exists
+   - Extension files — include 2+ files
+
+   [Android/Kotlin]
+   - Activity/Fragment implementations — MUST include 3+ files
+   - ViewModel/Repository — include 3+ files
+   - DI modules (Hilt/Dagger) — include all
+   - Network/API layer — include if exists
+   - Service classes (FCM, etc.) — include
+
+3. NEVER prioritize: inspector tools, test files, generated code, migration scripts, static assets, DTOs-only, package.json-only, node_modules, build outputs
+4. For refactoring: focus on implementation classes where bugs/patterns actually live
+5. For security: auth config, filters, interceptors, controllers with user input
+6. For performance: DAO with complex queries, Service with loops/batch operations
+7. Prefer LARGE files (>5KB) over small ones — they contain more logic
+8. Return ONLY a JSON array of relative file paths, nothing else
+
+Example: ["src/main/java/com/app/service/UserService.java", "src/main/java/com/app/dao/UserDao.java", "src/main/java/com/app/config/SecurityConfig.java"]
+
+RESPOND WITH JSON ARRAY ONLY:"""
+
+    try:
+        raw = call_gemini_fast(prompt, timeout=30)
+        # JSON 배열 추출
+        import re
+        match = re.search(r'\[.*\]', raw, re.DOTALL)
+        if match:
+            import json
+            paths = json.loads(match.group())
+            if isinstance(paths, list):
+                return [p for p in paths if isinstance(p, str)][:30]
+    except Exception as e:
+        print(f"    [Smart Reader] LLM file selection failed: {e}")
+
+    return []
+
+
+def _read_project_smart(project_dir: str, task: str, max_chars: int = 80000) -> str:
+    """
+    2-Stage Smart Reader: 파일 트리 분석 → LLM 선별 → 핵심 파일 깊이 읽기.
+    기존 _read_project_files 대비 2~3배 더 많은 핵심 코드를 컨텍스트에 포함.
+    """
+    base = Path(project_dir)
+    print(f"\n{'='*50}", flush=True)
+    print(f"  [SMART READER] Stage 1: Scanning {project_dir}", flush=True)
+    print(f"{'='*50}", flush=True)
+
+    # Stage 1: 파일 트리 + 설정파일
+    try:
+        file_tree, config_content, all_files = _build_file_tree_with_configs(project_dir)
+    except Exception as e:
+        print(f"  [SMART READER] ERROR in file tree scan: {e}")
+        return _read_project_files(project_dir, max_chars)
+
+    if not all_files:
+        print(f"  [SMART READER] No source files found, fallback")
+        return _read_project_files(project_dir, max_chars)
+
+    print(f"  [SMART READER] {len(all_files)} files found")
+    print(f"  [SMART READER] Stage 1.5: Asking Gemini for key files...")
+
+    # Stage 1.5: LLM에게 핵심 파일 선별 요청
+    try:
+        key_paths = _ask_llm_for_key_files(task, file_tree, config_content)
+    except Exception as e:
+        print(f"  [SMART READER] ERROR in LLM selection: {e}")
+        key_paths = []
+
+    if not key_paths:
+        print(f"  [SMART READER] LLM selection returned empty, fallback to priority reader")
+        return _read_project_files(project_dir, max_chars)
+
+    print(f"  [SMART READER] Stage 2: Reading {len(key_paths)} key files")
+    for p in key_paths[:5]:
+        print(f"    → {p}")
+    if len(key_paths) > 5:
+        print(f"    → ... and {len(key_paths)-5} more")
+
+    # Stage 2: 설정파일 + LLM 선별 파일 읽기
+    chunks = []
+    total = 0
+
+    # 2a: 설정파일 먼저 (이미 읽어둔 것)
+    if config_content:
+        chunks.append(f"=== Config Files ===\n{config_content}")
+        total += len(config_content)
+
+    # 2b: LLM이 선별한 핵심 파일
+    read_count = 0
+    for rel_path in key_paths:
+        f = base / rel_path
+        if not f.exists() or not f.is_file():
+            # fuzzy match: 경로가 약간 다를 수 있음
+            candidates = [af for af in all_files if rel_path in str(af.relative_to(base)).replace("\\", "/")]
+            if candidates:
+                f = candidates[0]
+            else:
+                continue
+        try:
+            content = f.read_text(encoding="utf-8", errors="replace")
+            rel = str(f.relative_to(base)).replace("\\", "/")
+            entry = f"\n### {rel}\n```\n{content}\n```"
+            if total + len(entry) > max_chars:
+                remain = max_chars - total - 100
+                if remain > 500:
+                    chunks.append(f"\n### {rel}\n```\n{content[:remain]}\n[...truncated]\n```")
+                    read_count += 1
+                break
+            chunks.append(entry)
+            total += len(entry)
+            read_count += 1
+        except Exception:
+            continue
+
+    # 2c: 파일 트리도 마지막에 참조용으로 추가 (남은 공간에)
+    tree_entry = f"\n=== Full File Tree (for reference) ===\n{file_tree}"
+    if total + len(tree_entry) < max_chars + 5000:  # 트리는 약간 초과 허용
+        chunks.append(tree_entry)
+
+    print(f"    [Smart Reader] Read {read_count} key files ({total:,} chars)")
     return "\n".join(chunks)
 
 
@@ -1580,94 +1806,116 @@ def horcrux_run():
             print(f"[WARN] project_dir validation failed: {e} — reading files anyway")
             # 검증 실패해도 경로가 존재하면 읽기 시도
 
-    # ── 동기 엔진: adaptive_fast / adaptive_standard / adaptive_full ──
+        # P3: project_dir이 있으면 코드 분석 → planning 대신 adaptive로 강제 라우팅
+        if engine == "planning_pipeline":
+            engine = "adaptive_full"
+            print(f"  [ROUTE] project_dir detected → forced adaptive_full (was planning_pipeline)")
+
+    # ── 비동기 엔진: adaptive_fast / adaptive_standard / adaptive_full ──
+    # P4: 비동기 job 제출 — job_id 즉시 반환, 결과는 /api/horcrux/status/{id}로 폴링
     if engine.startswith("adaptive_"):
-        try:
-            from adaptive_orchestrator import run_adaptive
-            # map engine → mode_override for orchestrator
-            orch_mode_map = {
-                "adaptive_fast": "fast",
-                "adaptive_standard": "standard",
-                "adaptive_full": "full_horcrux",
-            }
-            # project_dir이 있으면 코드를 읽어서 task에 주입
-            adaptive_task = task
-            if project_dir:
-                project_code = _read_project_files(project_dir, max_chars=25000)
-                if project_code:
-                    adaptive_task = (
-                        f"{task}\n\n"
-                        f"=== 분석 가드레일 ===\n"
-                        f"- 아래 제공된 코드에서 직접 확인한 이슈만 보고할 것\n"
-                        f"- 코드에서 확인 불가능한 추정은 [추정]으로 명시할 것\n"
-                        f"- 각 이슈에 반드시 해당 파일명과 실제 코드 인용을 포함할 것\n"
-                        f"- 코드를 직접 인용하지 못하면 이슈로 보고하지 말 것\n"
-                        f"- severity는 confirmed(코드에서 확인됨) / suspected(패턴상 추정) 중 하나를 추가 표기할 것\n"
-                        f"=== 프로젝트 코드 ({project_dir}) ===\n"
-                        f"{project_code}\n"
-                        f"=== 위 코드를 기반으로 분석하라 ==="
-                    )
+        sync_id = "hrx_" + datetime.now().strftime("%Y%m%d_%H%M%S")
+        orch_mode_map = {
+            "adaptive_fast": "fast",
+            "adaptive_standard": "standard",
+            "adaptive_full": "full_horcrux",
+        }
 
-            result = run_adaptive(
-                task=adaptive_task,
-                mode_override=orch_mode_map.get(engine),
-                task_type=data.get("task_type", "code"),
-                num_files=data.get("num_files", 1),
-                scope=data.get("scope", "medium"),
-                risk=data.get("risk", "medium"),
-                artifact_type=data.get("artifact_type", "none"),
-                interactive=data.get("interactive", "batch"),
-            )
-            # 2단계 검증: project_dir이 있으면 언급된 파일을 다시 읽고 검증
-            solution_text = result.get("final_solution", "")
-            if project_dir and solution_text:
-                print(f"  [VERIFY] 2단계 검증 시작...")
-                solution_text = _verify_analysis(solution_text, project_dir)
-                result["final_solution"] = solution_text
-                print(f"  [VERIFY] 검증 완료 ({len(solution_text)} chars)")
+        # job 상태 즉시 등록
+        horcrux_states[sync_id] = {
+            "id": sync_id, "task": task, "status": "running",
+            "phase": "initializing", "round": 0, "messages": [],
+            "avg_score": 0, "final_solution": "",
+            "error": None, "project_dir": project_dir,
+            "created_at": datetime.now().isoformat(), "finished_at": None,
+        }
 
-            # BUG-2 fix: 동기 응답에도 job_id 생성 → check()로 조회 가능
-            sync_id = "hrx_" + datetime.now().strftime("%Y%m%d_%H%M%S")
-            horcrux_states[sync_id] = {
-                "id": sync_id, "task": task, "status": "completed",
-                "phase": "completed",
-                "round": result.get("rounds", 1),
-                "messages": [
-                    {"role": "generator", "content": solution_text,
-                     "model": f"Claude ({engine})", "score": result.get("final_score", 0),
-                     "ts": datetime.now().isoformat()},
-                ] if solution_text else [],
-                "avg_score": result.get("final_score", 0),
-                "final_solution": solution_text,
-                "created_at": datetime.now().isoformat(),
-                "finished_at": datetime.now().isoformat(),
-            }
-            # 로그 파일로도 저장 (서버 재시작 후에도 스레드 유지)
+        def _run_adaptive_async(job_id, task, project_dir, engine, data):
+            """비동기 adaptive 실행 스레드"""
             try:
-                log_file = LOG_DIR / f"{sync_id}.json"
-                with open(log_file, "w", encoding="utf-8") as f:
-                    json.dump(horcrux_states[sync_id], f, ensure_ascii=False, indent=2)
-            except Exception:
-                pass
-            return jsonify({
-                "status": "converged" if result.get("converged") else "completed",
-                "job_id": sync_id,
-                "mode": mode,
-                "internal_engine": engine,
-                "score": result.get("final_score", 0),
-                "rounds": result.get("rounds", 0),
-                "solution": result.get("final_solution", ""),
-                "routing": {
-                    "source": classification.routing_source.value,
-                    "confidence": classification.confidence,
-                    "intent": intent,
-                    "reason": classification.reason,
-                },
-            })
-        except Exception as e:
-            import traceback
-            traceback.print_exc()
-            return jsonify({"error": str(e)}), 500
+                from adaptive_orchestrator import run_adaptive
+
+                # Smart Reader
+                adaptive_task = task
+                if project_dir:
+                    horcrux_states[job_id]["phase"] = "smart_reader"
+                    project_code = _read_project_smart(project_dir, task)
+                    if project_code:
+                        adaptive_task = (
+                            f"{task}\n\n"
+                            f"=== 분석 가드레일 ===\n"
+                            f"- 아래 제공된 코드에서 직접 확인한 이슈만 보고할 것\n"
+                            f"- 코드에서 확인 불가능한 추정은 [추정]으로 명시할 것\n"
+                            f"- 각 이슈에 반드시 해당 파일명과 실제 코드 인용을 포함할 것\n"
+                            f"- 코드를 직접 인용하지 못하면 이슈로 보고하지 말 것\n"
+                            f"- severity는 confirmed(코드에서 확인됨) / suspected(패턴상 추정) 중 하나를 추가 표기할 것\n"
+                            f"=== 프로젝트 코드 ({project_dir}) ===\n"
+                            f"{project_code}\n"
+                            f"=== 위 코드를 기반으로 분석하라 ==="
+                        )
+
+                horcrux_states[job_id]["phase"] = "running"
+                result = run_adaptive(
+                    task=adaptive_task,
+                    mode_override=orch_mode_map.get(engine),
+                    task_type=data.get("task_type", "code"),
+                    num_files=data.get("num_files", 1),
+                    scope=data.get("scope", "medium"),
+                    risk=data.get("risk", "medium"),
+                    artifact_type=data.get("artifact_type", "none"),
+                    interactive=data.get("interactive", "batch"),
+                )
+
+                solution_text = result.get("final_solution", "")
+                if project_dir and solution_text:
+                    horcrux_states[job_id]["phase"] = "verifying"
+                    print(f"  [VERIFY] 2단계 검증 시작...")
+                    solution_text = _verify_analysis(solution_text, project_dir)
+                    result["final_solution"] = solution_text
+                    print(f"  [VERIFY] 검증 완료 ({len(solution_text)} chars)")
+
+                horcrux_states[job_id].update({
+                    "status": "completed",
+                    "phase": "completed",
+                    "round": result.get("rounds", 1),
+                    "avg_score": result.get("final_score", 0),
+                    "final_solution": solution_text,
+                    "finished_at": datetime.now().isoformat(),
+                    "messages": [
+                        {"role": "generator", "content": solution_text,
+                         "model": f"Claude ({engine})", "score": result.get("final_score", 0),
+                         "ts": datetime.now().isoformat()},
+                    ] if solution_text else [],
+                })
+            except Exception as e:
+                import traceback; traceback.print_exc()
+                horcrux_states[job_id].update({
+                    "status": "error", "error": str(e),
+                    "finished_at": datetime.now().isoformat(),
+                })
+
+        # 스레드로 실행, 즉시 job_id 반환
+        t = threading.Thread(
+            target=_run_adaptive_async,
+            args=(sync_id, task, project_dir, engine, data),
+            daemon=True,
+        )
+        t.start()
+
+        return jsonify({
+            "job_id": sync_id,
+            "status": "running",
+            "internal_engine": engine,
+            "mode": mode,
+            "routing": {
+                "confidence": classification.confidence,
+                "intent": intent,
+                "reason": classification.reason,
+                "source": classification.source,
+            },
+        })
+
+    # (레거시 동기 경로 제거됨 — P4: 비동기 전환 완료)
 
     # ── 비동기 엔진: planning_pipeline (직접 호출, self-HTTP 제거) ──
     if engine == "planning_pipeline":

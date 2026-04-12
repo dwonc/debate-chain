@@ -534,18 +534,34 @@ def _run_standard(
         )
         if aux_decision.run_aux:
             print(f"    [3b] Aux Critics (reason: {aux_decision.reason})...")
+            # Aux용 경량 프롬프트: payload 제한 대응 + 명확한 점수 기준
+            _sol_compact = _truncate(current_solution, 2000)
+            aux_critic_prompt = (
+                f"You are a code reviewer. Score this solution on a 1-10 scale.\n"
+                f"Scoring guide: 1-3=poor(major issues), 4-5=below average, 6-7=good, 8-9=excellent, 10=perfect.\n"
+                f"You MUST reply with this exact format first: Score: X/10\n"
+                f"Then add 2 lines of feedback.\n\n"
+                f"Task: {_truncate(task, 300)}\n\n"
+                f"Solution (excerpt):\n{_sol_compact}"
+            )
             try:
                 aux_providers = make_auxiliary()
                 aux_scores = []
-                for name, provider in aux_providers.items():
+                import time as _time
+                for idx, (name, provider) in enumerate(aux_providers.items()):
+                    if idx > 0:
+                        _time.sleep(3)  # rate limit 회피: aux 간 3초 간격
                     try:
-                        aux_resp = provider.invoke(critic_prompt, timeout=60)
+                        aux_resp = provider.invoke(aux_critic_prompt, timeout=90)
                         if aux_resp.ok:
                             aux_score = _parse_score(aux_resp.text)
                             aux_scores.append(aux_score)
-                            print(f"        → {name}: {aux_score}/10")
-                    except Exception:
-                        pass
+                            print(f"        → Aux[{name}]: {aux_score}/10")
+                        else:
+                            err = aux_resp.error or "empty"
+                            print(f"        → Aux[{name}]: FAILED ({err})")
+                    except Exception as e:
+                        print(f"        → Aux[{name}]: FAILED ({e})")
                 if aux_scores:
                     # Weighted: Core × 0.8 + Aux avg × 0.2
                     aux_avg = sum(aux_scores) / len(aux_scores)

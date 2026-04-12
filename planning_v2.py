@@ -43,7 +43,7 @@ from core.engine.critic import (
     build_compact_context_package as _build_compact_context,
     format_issues_compact as _format_issues_compact,
 )
-_LOG_DIR = str(Path(__file__).parent / "logs")
+_LOG_DIR = Path(__file__).parent / "logs"
 
 
 def inject_callers(**kwargs):

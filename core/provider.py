@@ -55,7 +55,7 @@ class ProviderBackend(ABC):
     tier: str = "free"  # "paid" | "free"
 
     @abstractmethod
-    def invoke(self, prompt: str, timeout: int = 180) -> ProviderResponse:
+    def invoke(self, prompt: str, timeout: int = 300) -> ProviderResponse:
         ...
 
     def is_available(self) -> bool:
@@ -67,25 +67,35 @@ class ProviderBackend(ABC):
 # ═══════════════════════════════════════════
 
 class ClaudeCLIBackend(ProviderBackend):
-    """Claude Code CLI (Opus 4.6) — 메인 Generator + Judge"""
+    """Claude Code CLI — 역할별 모델 분리 (Opus=생성/개선, Sonnet=비평/심판)"""
     name = "claude-cli"
     tier = "paid"
+
+    def __init__(self, role: str = "generator"):
+        """role: 'generator'|'synthesizer' → Opus, 'critic'|'judge' → Sonnet"""
+        self.role = role
+        if role in ("generator", "synthesizer"):
+            self.model_id = "claude-opus-4-6"
+            self.model_label = "opus-4.6"
+        else:
+            self.model_id = "claude-sonnet-4-6"
+            self.model_label = "sonnet-4.6"
 
     def invoke(self, prompt: str, timeout: int = 300) -> ProviderResponse:
         t0 = time.monotonic()
         stdout, stderr, rc = run_cli_stdin(
-            ["claude", "-p", "-"], prompt, timeout
+            ["claude", "--model", self.model_id, "-p", "-"], prompt, timeout
         )
         if rc != 0 and not stdout.strip():
             if len(prompt) <= 8000:
                 stdout, stderr, rc = run_cli_stdin(
-                    ["claude", "-p", prompt], "", timeout
+                    ["claude", "--model", self.model_id, "-p", prompt], "", timeout
                 )
             else:
                 ms = int((time.monotonic() - t0) * 1000)
                 return ProviderResponse(
                     text="", provider="claude", backend="cli",
-                    model="opus-4.6", latency_ms=ms,
+                    model=self.model_label, latency_ms=ms,
                     error=f"CLI failed (prompt too long): {stderr[:300]}"
                 )
         ms = int((time.monotonic() - t0) * 1000)
@@ -93,7 +103,7 @@ class ClaudeCLIBackend(ProviderBackend):
         return ProviderResponse(
             text=stdout.strip() or stderr,
             provider="claude", backend="cli",
-            model="opus-4.6", latency_ms=ms, error=err
+            model=self.model_label, latency_ms=ms, error=err
         )
 
 
@@ -118,6 +128,39 @@ class CodexCLIBackend(ProviderBackend):
             text=stdout.strip() or stderr,
             provider="codex", backend="cli",
             model="codex-5.4", latency_ms=ms, error=err
+        )
+
+
+class GeminiCLIBackend(ProviderBackend):
+    """Gemini CLI (2.5 Pro) — Third Core: Generator + Critic"""
+    name = "gemini-cli"
+    tier = "paid"
+
+    def __init__(self, model: str = "gemini-3-pro"):
+        self.model_name = model
+
+    def invoke(self, prompt: str, timeout: int = 300) -> ProviderResponse:
+        t0 = time.monotonic()
+        # Gemini CLI에 모델 명시 + non-interactive 모드
+        stdout, stderr, rc = run_cli_stdin(
+            ["gemini", "-m", self.model_name, "-p", "-"], prompt, timeout
+        )
+        ms = int((time.monotonic() - t0) * 1000)
+        # "Loaded cached credentials" 등 stderr 메시지 필터링
+        text = stdout.strip()
+        if not text and stderr:
+            # stderr에 실제 응답이 올 수 있음
+            filtered = "\n".join(
+                l for l in stderr.splitlines()
+                if "cached credentials" not in l.lower() and l.strip()
+            )
+            if filtered and not filtered.startswith("[ERROR]"):
+                text = filtered
+        err = None if rc == 0 else stderr[:300]
+        return ProviderResponse(
+            text=text or stderr,
+            provider="gemini", backend="cli",
+            model="gemini-3.1-pro", latency_ms=ms, error=err
         )
 
 
@@ -146,6 +189,15 @@ OPENAI_COMPATIBLE_ENDPOINTS = {
             "meta-llama/Meta-Llama-3.1-70B-Instruct-Turbo",
             "deepseek-ai/DeepSeek-V3",
             "Qwen/Qwen2.5-Coder-32B-Instruct",
+        ],
+    },
+    "deepseek": {
+        "base_url": "https://api.deepseek.com/v1",
+        "env_key": "DEEPSEEK_API_KEY",
+        "default_model": "deepseek-chat",
+        "models": [
+            "deepseek-chat",
+            "deepseek-reasoner",
         ],
     },
     "fireworks": {
@@ -195,6 +247,22 @@ class OpenSourceAPIBackend(ProviderBackend):
     def is_available(self) -> bool:
         return bool(os.environ.get(self.env_key))
 
+    # Aux 프롬프트 크기 제한 (Groq 413 / OpenRouter 429 방지)
+    AUX_PROMPT_MAX_CHARS = 6000  # ~1.5k tokens — Groq 413 방지
+
+    def _truncate_prompt(self, prompt: str) -> str:
+        """Aux critic용 프롬프트 truncate — 무료 티어 payload/rate 제한 대응."""
+        if len(prompt) <= self.AUX_PROMPT_MAX_CHARS:
+            return prompt
+        # 앞 70% + 뒤 30% (도입부+결론 우선)
+        head = int(self.AUX_PROMPT_MAX_CHARS * 0.7)
+        tail = self.AUX_PROMPT_MAX_CHARS - head
+        return (
+            prompt[:head]
+            + "\n\n... [truncated] ...\n\n"
+            + prompt[-tail:]
+        )
+
     def invoke(self, prompt: str, timeout: int = 120) -> ProviderResponse:
         t0 = time.monotonic()
         api_key = os.environ.get(self.env_key, "")
@@ -205,8 +273,11 @@ class OpenSourceAPIBackend(ProviderBackend):
                 error=f"{self.env_key} not set"
             )
 
+        # Aux는 무료 티어 → 프롬프트 크기 제한
+        prompt = self._truncate_prompt(prompt)
+
         try:
-            import requests
+            import requests as _requests
             headers = {
                 "Authorization": f"Bearer {api_key}",
                 "Content-Type": "application/json",
@@ -216,19 +287,30 @@ class OpenSourceAPIBackend(ProviderBackend):
                 headers["HTTP-Referer"] = "https://github.com/horcrux"
                 headers["X-Title"] = "Horcrux"
 
+            # Aux는 점수+짧은 피드백만 → max_tokens 절약
+            max_tok = 1024 if len(prompt) < self.AUX_PROMPT_MAX_CHARS else 512
             payload = {
                 "model": self.model,
                 "messages": [{"role": "user", "content": prompt}],
-                "max_tokens": 8192,
+                "max_tokens": max_tok,
                 "temperature": 0.7,
             }
 
-            resp = requests.post(
-                f"{self.base_url}/chat/completions",
-                headers=headers,
-                json=payload,
-                timeout=timeout,
-            )
+            # 429 retry with backoff (무료 티어 rate limit 대응)
+            max_retries = 3 if self.endpoint_name in ("openrouter", "groq") else 1
+            for attempt in range(max_retries):
+                resp = _requests.post(
+                    f"{self.base_url}/chat/completions",
+                    headers=headers,
+                    json=payload,
+                    timeout=timeout,
+                )
+                if resp.status_code == 429 and attempt < max_retries - 1:
+                    wait = (attempt + 1) * 10  # 10s, 20s
+                    import time as _time
+                    _time.sleep(wait)
+                    continue
+                break
             resp.raise_for_status()
             data = resp.json()
 
@@ -313,8 +395,22 @@ async def invoke_parallel_async(
 def make_core_pair() -> Dict[str, ProviderBackend]:
     """핵심 2-pair: Claude + Codex"""
     return {
-        "claude": ClaudeCLIBackend(),
+        "claude": ClaudeCLIBackend(role="generator"),
         "codex": CodexCLIBackend(),
+    }
+
+
+def make_core_trio() -> Dict[str, ProviderBackend]:
+    """핵심 3-pair: Claude + Codex + Gemini (Core Trio)
+    Claude는 역할별로 다른 인스턴스를 사용:
+      - claude_gen: Opus (Generator/Synthesizer)
+      - claude_crit: Sonnet (Critic/Judge)
+    """
+    return {
+        "claude_gen": ClaudeCLIBackend(role="generator"),
+        "claude_crit": ClaudeCLIBackend(role="critic"),
+        "codex": CodexCLIBackend(),
+        "gemini": GeminiCLIBackend(),
     }
 
 
