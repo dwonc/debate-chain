@@ -1911,7 +1911,7 @@ def horcrux_run():
                 "confidence": classification.confidence,
                 "intent": intent,
                 "reason": classification.reason,
-                "source": classification.source,
+                "source": classification.routing_source.value,
             },
         })
 
